@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/SamuelFan1/Axis/internal/config"
 	"github.com/SamuelFan1/Axis/internal/domain/node"
@@ -95,7 +97,7 @@ func runServiceRegister(args []string) error {
 	printRecord("SERVICE_REGISTER_RESULT", [][2]string{
 		{"UUID", registered.UUID},
 		{"HOSTNAME", registered.Hostname},
-		{"MANAGEMENT_ADDRESS", registered.ManagementAddress},
+		{"INTERNAL_IP", extractInternalIP(registered.ManagementAddress)},
 		{"STATUS", registered.Status},
 		{"REGION", registered.Region},
 	})
@@ -118,12 +120,15 @@ func runServiceList() error {
 		rows = append(rows, []string{
 			item.UUID,
 			item.Hostname,
-			item.ManagementAddress,
+			extractInternalIP(item.ManagementAddress),
 			item.Status,
 			item.Region,
+			fmt.Sprintf("%.1f", item.CPUUsagePercent),
+			fmt.Sprintf("%.1f", item.MemoryUsagePercent),
+			fmt.Sprintf("%.1f", item.DiskUsagePercent),
 		})
 	}
-	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "MANAGEMENT_ADDRESS", "STATUS", "REGION"}, rows)
+	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "STATUS", "REGION", "CPU%", "MEM%", "DISK%"}, rows)
 	return nil
 }
 
@@ -141,12 +146,16 @@ func runServiceShow(uuidValue string) error {
 	printRecord("SERVICE_SHOW_RESULT", [][2]string{
 		{"UUID", item.UUID},
 		{"HOSTNAME", item.Hostname},
-		{"MANAGEMENT_ADDRESS", item.ManagementAddress},
+		{"INTERNAL_IP", extractInternalIP(item.ManagementAddress)},
 		{"STATUS", item.Status},
 		{"REGION", item.Region},
+		{"CPU_USAGE_PERCENT", fmt.Sprintf("%.1f", item.CPUUsagePercent)},
+		{"MEMORY_USAGE_PERCENT", fmt.Sprintf("%.1f", item.MemoryUsagePercent)},
+		{"DISK_USAGE_PERCENT", fmt.Sprintf("%.1f", item.DiskUsagePercent)},
 		{"CREATED_AT", item.CreatedAt.Format("2006-01-02 15:04:05")},
 		{"UPDATED_AT", item.UpdatedAt.Format("2006-01-02 15:04:05")},
 		{"LAST_SEEN_AT", item.LastSeenAt.Format("2006-01-02 15:04:05")},
+		{"LAST_REPORTED_AT", formatTime(item.LastReportedAt)},
 	})
 	return nil
 }
@@ -324,4 +333,19 @@ func formatRow(values []string, widths []int) string {
 		builder.WriteString("|")
 	}
 	return builder.String()
+}
+
+func formatTime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Format("2006-01-02 15:04:05")
+}
+
+func extractInternalIP(managementAddress string) string {
+	host, _, err := net.SplitHostPort(managementAddress)
+	if err == nil && strings.TrimSpace(host) != "" {
+		return host
+	}
+	return managementAddress
 }

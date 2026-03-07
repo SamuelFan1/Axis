@@ -375,11 +375,21 @@ cp .env.example .env
 - `AXIS_ADMIN_USERNAME`
 - `AXIS_ADMIN_PASSWORD`
 - `AXIS_NODE_SHARED_TOKEN`
+- `AXIS_NODE_TIMEOUT_SEC`
+- `AXIS_NODE_MONITOR_INTERVAL_SEC`
 
 启动服务：
 
 ```bash
 go run ./cmd/axisd
+```
+
+推荐生产环境使用 systemd：
+
+```bash
+sudo cp /apps/Axis/deployments/systemd/axisd.service /etc/systemd/system/axisd.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now axisd.service
 ```
 
 然后创建管理员 shell 环境文件：
@@ -430,6 +440,10 @@ axis service-list
 - `GET /api/v1/nodes` 为管理员接口，使用 HTTP Basic Auth
 - `POST /api/v1/nodes/register` 为 node 接口，使用 `X-Axis-Node-Token`
 - `POST /api/v1/admin/nodes/register` 为管理员显式纳管接口，使用 HTTP Basic Auth
+- `POST /api/v1/nodes/report` 为 node 指标上报接口，使用 `X-Axis-Node-Token`
+- 如果超过 `AXIS_NODE_TIMEOUT_SEC` 秒未收到上报，控制端会自动把节点状态置为 `down`
+- 控制端按 `AXIS_NODE_MONITOR_INTERVAL_SEC` 周期扫描超时节点
+- 建议 `AXIS_NODE_TIMEOUT_SEC` 明显大于 `AXIS_NODE_REPORT_INTERVAL_SEC`
 
 ## CLI 管理命令
 
@@ -502,6 +516,8 @@ axis region-list
 - `axis-node`：节点代理，负责以 node 身份向管理端注册自己
 - 管理端命令优先通过 `source /apps/Axis/axis-rc.sh` 后执行 `axis`
 - 节点注册优先通过 `axis-node register` 执行
+- 生产环境推荐通过 systemd 运行 `axisd` 与 `axis-node`
+- `axis-node.service` 会默认把宿主机主机名注入为节点主机名
 
 ## License
 

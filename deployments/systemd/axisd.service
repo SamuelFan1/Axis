@@ -1,0 +1,15 @@
+[Unit]
+Description=Axis Control Plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/apps/Axis
+EnvironmentFile=-/apps/Axis/.env
+ExecStart=/usr/local/bin/axisd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

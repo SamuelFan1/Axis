@@ -25,6 +25,17 @@ type updateNodeStatusRequest struct {
 	Status string `json:"status"`
 }
 
+type reportNodeRequest struct {
+	UUID               string  `json:"uuid"`
+	Hostname           string  `json:"hostname"`
+	ManagementAddress  string  `json:"management_address"`
+	Region             string  `json:"region"`
+	Status             string  `json:"status"`
+	CPUUsagePercent    float64 `json:"cpu_usage_percent"`
+	MemoryUsagePercent float64 `json:"memory_usage_percent"`
+	DiskUsagePercent   float64 `json:"disk_usage_percent"`
+}
+
 func NewNodeHandler(nodeService *service.NodeService) *NodeHandler {
 	return &NodeHandler{nodeService: nodeService}
 }
@@ -75,6 +86,49 @@ func (h *NodeHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 func (h *NodeHandler) RegisterAdmin(w http.ResponseWriter, r *http.Request) {
 	h.Register(w, r)
+}
+
+func (h *NodeHandler) Report(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	var req reportNodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid json body",
+		})
+		return
+	}
+
+	reported, err := h.nodeService.Report(r.Context(), node.Node{
+		UUID:               req.UUID,
+		Hostname:           req.Hostname,
+		ManagementAddress:  req.ManagementAddress,
+		Region:             req.Region,
+		Status:             req.Status,
+		CPUUsagePercent:    req.CPUUsagePercent,
+		MemoryUsagePercent: req.MemoryUsagePercent,
+		DiskUsagePercent:   req.DiskUsagePercent,
+	})
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if err.Error() == "node not found" {
+			statusCode = http.StatusNotFound
+		}
+		writeJSON(w, statusCode, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "node reported",
+		"node":    reported,
+	})
 }
 
 func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {

@@ -22,7 +22,9 @@ type CLIAuthConfig struct {
 }
 
 type AppConfig struct {
-	HTTPAddress string
+	HTTPAddress            string
+	NodeTimeoutSec         int
+	NodeMonitorIntervalSec int
 }
 
 type AuthConfig struct {
@@ -47,7 +49,9 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		App: AppConfig{
-			HTTPAddress: getEnv("AXIS_HTTP_ADDRESS", ":9090"),
+			HTTPAddress:            getEnv("AXIS_HTTP_ADDRESS", ":9090"),
+			NodeTimeoutSec:         getEnvInt("AXIS_NODE_TIMEOUT_SEC", 30),
+			NodeMonitorIntervalSec: getEnvInt("AXIS_NODE_MONITOR_INTERVAL_SEC", 5),
 		},
 		Auth: AuthConfig{
 			AdminUsername:   getEnv("AXIS_ADMIN_USERNAME", ""),
@@ -86,6 +90,12 @@ func Load() (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.Auth.NodeSharedToken) == "" {
 		return nil, fmt.Errorf("AXIS_NODE_SHARED_TOKEN must be set")
+	}
+	if cfg.App.NodeTimeoutSec <= 0 {
+		cfg.App.NodeTimeoutSec = 30
+	}
+	if cfg.App.NodeMonitorIntervalSec <= 0 {
+		cfg.App.NodeMonitorIntervalSec = 5
 	}
 
 	return cfg, nil

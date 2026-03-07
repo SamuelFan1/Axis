@@ -72,20 +72,7 @@ WHERE management_address = ?
 LIMIT 1`
 
 	var item node.Node
-	err := r.db.QueryRowContext(ctx, query, managementAddress).Scan(
-		&item.UUID,
-		&item.Hostname,
-		&item.ManagementAddress,
-		&item.Region,
-		&item.Status,
-		&item.CPUUsagePercent,
-		&item.MemoryUsagePercent,
-		&item.DiskUsagePercent,
-		&item.CreatedAt,
-		&item.UpdatedAt,
-		&item.LastSeenAt,
-		&item.LastReportedAt,
-	)
+	err := scanNode(r.db.QueryRowContext(ctx, query, managementAddress), &item)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -116,20 +103,7 @@ WHERE uuid = ?
 LIMIT 1`
 
 	var item node.Node
-	err := r.db.QueryRowContext(ctx, query, uuid).Scan(
-		&item.UUID,
-		&item.Hostname,
-		&item.ManagementAddress,
-		&item.Region,
-		&item.Status,
-		&item.CPUUsagePercent,
-		&item.MemoryUsagePercent,
-		&item.DiskUsagePercent,
-		&item.CreatedAt,
-		&item.UpdatedAt,
-		&item.LastSeenAt,
-		&item.LastReportedAt,
-	)
+	err := scanNode(r.db.QueryRowContext(ctx, query, uuid), &item)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -246,20 +220,7 @@ ORDER BY region ASC, hostname ASC, uuid ASC`
 	var items []node.Node
 	for rows.Next() {
 		var item node.Node
-		if err := rows.Scan(
-			&item.UUID,
-			&item.Hostname,
-			&item.ManagementAddress,
-			&item.Region,
-			&item.Status,
-			&item.CPUUsagePercent,
-			&item.MemoryUsagePercent,
-			&item.DiskUsagePercent,
-			&item.CreatedAt,
-			&item.UpdatedAt,
-			&item.LastSeenAt,
-			&item.LastReportedAt,
-		); err != nil {
+		if err := scanNode(rows, &item); err != nil {
 			return nil, fmt.Errorf("scan managed node: %w", err)
 		}
 		items = append(items, item)
@@ -337,9 +298,61 @@ ORDER BY region ASC`
 	return items, nil
 }
 
+func (r *NodeRepository) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int) (int, error) {
+	if timeoutSec <= 0 {
+		timeoutSec = 30
+	}
+	result, err := r.db.ExecContext(
+		ctx,
+		`UPDATE managed_nodes
+		 SET status = 'down',
+		     updated_at = CURRENT_TIMESTAMP(6)
+		 WHERE status <> 'down'
+		   AND COALESCE(last_reported_at, last_seen_at) < DATE_SUB(CURRENT_TIMESTAMP(6), INTERVAL ? SECOND)`,
+		timeoutSec,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("mark timed out nodes down: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("mark timed out nodes down rows affected: %w", err)
+	}
+	return int(rowsAffected), nil
+}
+
 func nullTime(value time.Time) interface{} {
 	if value.IsZero() {
 		return nil
 	}
 	return value
+}
+
+type scanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanNode(src scanner, item *node.Node) error {
+	var lastReportedAt sql.NullTime
+	if err := src.Scan(
+		&item.UUID,
+		&item.Hostname,
+		&item.ManagementAddress,
+		&item.Region,
+		&item.Status,
+		&item.CPUUsagePercent,
+		&item.MemoryUsagePercent,
+		&item.DiskUsagePercent,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+		&item.LastSeenAt,
+		&lastReportedAt,
+	); err != nil {
+		return err
+	}
+	if lastReportedAt.Valid {
+		item.LastReportedAt = lastReportedAt.Time
+	}
+	return nil
 }

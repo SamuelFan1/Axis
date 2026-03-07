@@ -206,3 +206,10 @@ func validatePercent(name string, value float64) error {
 	}
 	return nil
 }
+
+func (s *NodeService) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int) (int, error) {
+	if timeoutSec <= 0 {
+		timeoutSec = 30
+	}
+	return s.repo.MarkTimedOutNodesDown(ctx, timeoutSec)
+}

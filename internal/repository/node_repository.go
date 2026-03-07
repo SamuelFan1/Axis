@@ -16,4 +16,5 @@ type NodeRepository interface {
 	DeleteByUUID(ctx context.Context, uuid string) (bool, error)
 	UpdateStatus(ctx context.Context, uuid string, status string) (bool, error)
 	ListRegions(ctx context.Context) ([]node.RegionSummary, error)
+	MarkTimedOutNodesDown(ctx context.Context, timeoutSec int) (int, error)
 }

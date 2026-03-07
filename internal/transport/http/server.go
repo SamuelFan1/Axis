@@ -28,6 +28,7 @@ func (s *Server) Run() error {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("/api/v1/nodes/register", nodeTokenMiddleware(s.authConfig, s.nodeHandler.Register))
+	mux.HandleFunc("/api/v1/nodes/report", nodeTokenMiddleware(s.authConfig, s.nodeHandler.Report))
 	mux.HandleFunc("/api/v1/admin/nodes/register", adminAuthMiddleware(s.authConfig, s.nodeHandler.RegisterAdmin))
 	mux.HandleFunc("/api/v1/nodes", adminAuthMiddleware(s.authConfig, s.nodeHandler.List))
 	mux.HandleFunc("/api/v1/regions", adminAuthMiddleware(s.authConfig, s.nodeHandler.ListRegions))
