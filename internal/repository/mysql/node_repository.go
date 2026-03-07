@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -44,6 +45,15 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_usage_percent DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS disk_usage_percent DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS last_reported_at DATETIME(6) NULL`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS internal_ip VARCHAR(64) DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS public_ip VARCHAR(64) DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS cpu_cores INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_total_gb DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_used_gb DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_total_gb DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_used_gb DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_usage_percent DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS disk_details JSON NULL`,
 	} {
 		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("upgrade managed_nodes table: %w", err)
@@ -52,21 +62,31 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 	return nil
 }
 
-func (r *NodeRepository) FindByManagementAddress(ctx context.Context, managementAddress string) (*node.Node, error) {
-	const query = `
-SELECT
+const selectNodeColumns = `
     uuid,
     hostname,
     management_address,
+    internal_ip,
+    public_ip,
     region,
     status,
+    cpu_cores,
     cpu_usage_percent,
+    memory_total_gb,
+    memory_used_gb,
     memory_usage_percent,
+    swap_total_gb,
+    swap_used_gb,
+    swap_usage_percent,
     disk_usage_percent,
+    disk_details,
     created_at,
     updated_at,
     last_seen_at,
-    last_reported_at
+    last_reported_at`
+
+func (r *NodeRepository) FindByManagementAddress(ctx context.Context, managementAddress string) (*node.Node, error) {
+	const query = `SELECT` + selectNodeColumns + `
 FROM managed_nodes
 WHERE management_address = ?
 LIMIT 1`
@@ -84,20 +104,7 @@ LIMIT 1`
 }
 
 func (r *NodeRepository) FindByUUID(ctx context.Context, uuid string) (*node.Node, error) {
-	const query = `
-SELECT
-    uuid,
-    hostname,
-    management_address,
-    region,
-    status,
-    cpu_usage_percent,
-    memory_usage_percent,
-    disk_usage_percent,
-    created_at,
-    updated_at,
-    last_seen_at,
-    last_reported_at
+	const query = `SELECT` + selectNodeColumns + `
 FROM managed_nodes
 WHERE uuid = ?
 LIMIT 1`
@@ -152,16 +159,26 @@ ON DUPLICATE KEY UPDATE
 }
 
 func (r *NodeRepository) UpdateHeartbeat(ctx context.Context, item node.Node) error {
+	diskDetailsJSON := marshalDiskDetails(item.DiskDetails)
 	const query = `
 UPDATE managed_nodes
 SET
     hostname = ?,
     management_address = ?,
+    internal_ip = ?,
+    public_ip = ?,
     region = ?,
     status = ?,
+    cpu_cores = ?,
     cpu_usage_percent = ?,
+    memory_total_gb = ?,
+    memory_used_gb = ?,
     memory_usage_percent = ?,
+    swap_total_gb = ?,
+    swap_used_gb = ?,
+    swap_usage_percent = ?,
     disk_usage_percent = ?,
+    disk_details = ?,
     updated_at = CURRENT_TIMESTAMP(6),
     last_seen_at = CURRENT_TIMESTAMP(6),
     last_reported_at = CURRENT_TIMESTAMP(6)
@@ -172,11 +189,20 @@ WHERE uuid = ?`
 		query,
 		item.Hostname,
 		item.ManagementAddress,
+		item.InternalIP,
+		item.PublicIP,
 		item.Region,
 		item.Status,
+		item.CPUCores,
 		item.CPUUsagePercent,
+		item.MemoryTotalGB,
+		item.MemoryUsedGB,
 		item.MemoryUsagePercent,
+		item.SwapTotalGB,
+		item.SwapUsedGB,
+		item.SwapUsagePercent,
 		item.DiskUsagePercent,
+		diskDetailsJSON,
 		item.UUID,
 	)
 	if err != nil {
@@ -194,20 +220,7 @@ WHERE uuid = ?`
 }
 
 func (r *NodeRepository) List(ctx context.Context) ([]node.Node, error) {
-	const query = `
-SELECT
-    uuid,
-    hostname,
-    management_address,
-    region,
-    status,
-    cpu_usage_percent,
-    memory_usage_percent,
-    disk_usage_percent,
-    created_at,
-    updated_at,
-    last_seen_at,
-    last_reported_at
+	const query = `SELECT` + selectNodeColumns + `
 FROM managed_nodes
 ORDER BY region ASC, hostname ASC, uuid ASC`
 
@@ -335,15 +348,25 @@ type scanner interface {
 
 func scanNode(src scanner, item *node.Node) error {
 	var lastReportedAt sql.NullTime
+	var diskDetailsRaw []byte
 	if err := src.Scan(
 		&item.UUID,
 		&item.Hostname,
 		&item.ManagementAddress,
+		&item.InternalIP,
+		&item.PublicIP,
 		&item.Region,
 		&item.Status,
+		&item.CPUCores,
 		&item.CPUUsagePercent,
+		&item.MemoryTotalGB,
+		&item.MemoryUsedGB,
 		&item.MemoryUsagePercent,
+		&item.SwapTotalGB,
+		&item.SwapUsedGB,
+		&item.SwapUsagePercent,
 		&item.DiskUsagePercent,
+		&diskDetailsRaw,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 		&item.LastSeenAt,
@@ -354,5 +377,19 @@ func scanNode(src scanner, item *node.Node) error {
 	if lastReportedAt.Valid {
 		item.LastReportedAt = lastReportedAt.Time
 	}
+	if len(diskDetailsRaw) > 0 {
+		_ = json.Unmarshal(diskDetailsRaw, &item.DiskDetails)
+	}
 	return nil
+}
+
+func marshalDiskDetails(details []node.DiskDetail) interface{} {
+	if len(details) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(details)
+	if err != nil {
+		return nil
+	}
+	return b
 }

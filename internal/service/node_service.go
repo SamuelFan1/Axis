@@ -182,6 +182,11 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	if err := validatePercent("disk_usage_percent", item.DiskUsagePercent); err != nil {
 		return node.Node{}, err
 	}
+	if item.SwapTotalGB > 0 {
+		if err := validatePercent("swap_usage_percent", item.SwapUsagePercent); err != nil {
+			return node.Node{}, err
+		}
+	}
 
 	if err := s.repo.UpdateHeartbeat(ctx, item); err != nil {
 		if err == sql.ErrNoRows {

@@ -174,7 +174,7 @@ func (c *Client) doJSON(method, path string, reqBody interface{}, out interface{
 		raw, _ := json.Marshal(out)
 		_ = json.Unmarshal(raw, &apiErr)
 		if apiErr.Error != "" {
-			return fmt.Errorf(apiErr.Error)
+			return fmt.Errorf("%s", apiErr.Error)
 		}
 		return fmt.Errorf("axis api returned status %d", resp.StatusCode)
 	}

@@ -26,14 +26,23 @@ type updateNodeStatusRequest struct {
 }
 
 type reportNodeRequest struct {
-	UUID               string  `json:"uuid"`
-	Hostname           string  `json:"hostname"`
-	ManagementAddress  string  `json:"management_address"`
-	Region             string  `json:"region"`
-	Status             string  `json:"status"`
-	CPUUsagePercent    float64 `json:"cpu_usage_percent"`
-	MemoryUsagePercent float64 `json:"memory_usage_percent"`
-	DiskUsagePercent   float64 `json:"disk_usage_percent"`
+	UUID               string           `json:"uuid"`
+	Hostname           string           `json:"hostname"`
+	ManagementAddress  string           `json:"management_address"`
+	InternalIP         string           `json:"internal_ip"`
+	PublicIP           string           `json:"public_ip"`
+	Region             string           `json:"region"`
+	Status             string           `json:"status"`
+	CPUCores           int              `json:"cpu_cores"`
+	CPUUsagePercent    float64          `json:"cpu_usage_percent"`
+	MemoryTotalGB      float64          `json:"memory_total_gb"`
+	MemoryUsedGB       float64          `json:"memory_used_gb"`
+	MemoryUsagePercent float64          `json:"memory_usage_percent"`
+	SwapTotalGB        float64          `json:"swap_total_gb"`
+	SwapUsedGB         float64          `json:"swap_used_gb"`
+	SwapUsagePercent   float64          `json:"swap_usage_percent"`
+	DiskUsagePercent   float64          `json:"disk_usage_percent"`
+	DiskDetails        []node.DiskDetail `json:"disk_details"`
 }
 
 func NewNodeHandler(nodeService *service.NodeService) *NodeHandler {
@@ -105,14 +114,23 @@ func (h *NodeHandler) Report(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reported, err := h.nodeService.Report(r.Context(), node.Node{
-		UUID:               req.UUID,
-		Hostname:           req.Hostname,
-		ManagementAddress:  req.ManagementAddress,
-		Region:             req.Region,
-		Status:             req.Status,
-		CPUUsagePercent:    req.CPUUsagePercent,
-		MemoryUsagePercent: req.MemoryUsagePercent,
-		DiskUsagePercent:   req.DiskUsagePercent,
+		UUID:                req.UUID,
+		Hostname:            req.Hostname,
+		ManagementAddress:   req.ManagementAddress,
+		InternalIP:          req.InternalIP,
+		PublicIP:            req.PublicIP,
+		Region:              req.Region,
+		Status:              req.Status,
+		CPUCores:            req.CPUCores,
+		CPUUsagePercent:     req.CPUUsagePercent,
+		MemoryTotalGB:       req.MemoryTotalGB,
+		MemoryUsedGB:        req.MemoryUsedGB,
+		MemoryUsagePercent:  req.MemoryUsagePercent,
+		SwapTotalGB:         req.SwapTotalGB,
+		SwapUsedGB:          req.SwapUsedGB,
+		SwapUsagePercent:    req.SwapUsagePercent,
+		DiskUsagePercent:    req.DiskUsagePercent,
+		DiskDetails:        req.DiskDetails,
 	})
 	if err != nil {
 		statusCode := http.StatusBadRequest

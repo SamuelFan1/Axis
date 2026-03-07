@@ -117,18 +117,20 @@ func runServiceList() error {
 
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
+		internalIP := item.InternalIP
+		if internalIP == "" {
+			internalIP = extractInternalIP(item.ManagementAddress)
+		}
 		rows = append(rows, []string{
 			item.UUID,
 			item.Hostname,
-			extractInternalIP(item.ManagementAddress),
+			internalIP,
+			item.PublicIP,
 			item.Status,
 			item.Region,
-			fmt.Sprintf("%.1f", item.CPUUsagePercent),
-			fmt.Sprintf("%.1f", item.MemoryUsagePercent),
-			fmt.Sprintf("%.1f", item.DiskUsagePercent),
 		})
 	}
-	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "STATUS", "REGION", "CPU%", "MEM%", "DISK%"}, rows)
+	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "STATUS", "REGION"}, rows)
 	return nil
 }
 
@@ -143,20 +145,45 @@ func runServiceShow(uuidValue string) error {
 		return err
 	}
 
-	printRecord("SERVICE_SHOW_RESULT", [][2]string{
+	internalIP := item.InternalIP
+	if internalIP == "" {
+		internalIP = extractInternalIP(item.ManagementAddress)
+	}
+
+	fields := [][2]string{
 		{"UUID", item.UUID},
 		{"HOSTNAME", item.Hostname},
-		{"INTERNAL_IP", extractInternalIP(item.ManagementAddress)},
+		{"INTERNAL_IP", internalIP},
+		{"PUBLIC_IP", item.PublicIP},
 		{"STATUS", item.Status},
 		{"REGION", item.Region},
-		{"CPU_USAGE_PERCENT", fmt.Sprintf("%.1f", item.CPUUsagePercent)},
-		{"MEMORY_USAGE_PERCENT", fmt.Sprintf("%.1f", item.MemoryUsagePercent)},
-		{"DISK_USAGE_PERCENT", fmt.Sprintf("%.1f", item.DiskUsagePercent)},
-		{"CREATED_AT", item.CreatedAt.Format("2006-01-02 15:04:05")},
-		{"UPDATED_AT", item.UpdatedAt.Format("2006-01-02 15:04:05")},
+		{"CPU_CORES", fmt.Sprintf("%d cores", item.CPUCores)},
+		{"CPU_USAGE_PERCENT", fmt.Sprintf("%.1f%%", item.CPUUsagePercent)},
+		{"MEMORY_TOTAL_GB", fmt.Sprintf("%.2f GB", item.MemoryTotalGB)},
+		{"MEMORY_USED_GB", fmt.Sprintf("%.2f GB", item.MemoryUsedGB)},
+		{"MEMORY_USAGE_PERCENT", fmt.Sprintf("%.1f%%", item.MemoryUsagePercent)},
+		{"SWAP_TOTAL_GB", fmt.Sprintf("%.2f GB", item.SwapTotalGB)},
+		{"SWAP_USED_GB", fmt.Sprintf("%.2f GB", item.SwapUsedGB)},
+		{"SWAP_USAGE_PERCENT", fmt.Sprintf("%.1f%%", item.SwapUsagePercent)},
+		{"DISK_USAGE_PERCENT", fmt.Sprintf("%.1f%%", item.DiskUsagePercent)},
 		{"LAST_SEEN_AT", item.LastSeenAt.Format("2006-01-02 15:04:05")},
 		{"LAST_REPORTED_AT", formatTime(item.LastReportedAt)},
-	})
+	}
+	printRecord("SERVICE_SHOW_RESULT", fields)
+
+	if len(item.DiskDetails) > 0 {
+		diskRows := make([][]string, 0, len(item.DiskDetails))
+		for _, d := range item.DiskDetails {
+			diskRows = append(diskRows, []string{
+				d.MountPoint,
+				d.Filesystem,
+				fmt.Sprintf("%.2f GB", d.TotalGB),
+				fmt.Sprintf("%.2f GB", d.UsedGB),
+				fmt.Sprintf("%.1f%%", d.UsagePercent),
+			})
+		}
+		printTable("DISK_DETAILS", []string{"MOUNT_POINT", "FILESYSTEM", "TOTAL_GB", "USED_GB", "USAGE_PERCENT"}, diskRows)
+	}
 	return nil
 }
 

@@ -387,7 +387,14 @@ go run ./cmd/axisd
 推荐生产环境使用 systemd：
 
 ```bash
-sudo cp /apps/Axis/deployments/systemd/axisd.service /etc/systemd/system/axisd.service
+# 构建并部署
+cd /apps/Axis
+go build -o axisd ./cmd/axisd
+go build -o axis ./cmd/axis
+sudo cp axisd axis /usr/local/bin/
+
+# 安装 systemd 单元并启动
+sudo cp deployments/systemd/axisd.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now axisd.service
 ```
@@ -473,11 +480,22 @@ axis service-register \
 axis service-list
 ```
 
+输出摘要字段：`UUID`、`HOSTNAME`、`INTERNAL_IP`、`PUBLIC_IP`、`STATUS`、`REGION`。
+
+验证：执行 `axis service-list` 与 `axis service-show <uuid>`，确认资源指标（CPU cores、内存 GB、Swap GB、磁盘明细）带单位正常显示。
+
 ### 查看单台服务器
 
 ```bash
 axis service-show <uuid>
 ```
+
+输出完整资源详情（数值带单位：cores、GB、%）：
+
+- CPU 核数、使用率
+- 内存/Swap 总量、已用、使用率
+- 全部磁盘挂载点明细（MOUNT_POINT、FILESYSTEM、TOTAL_GB、USED_GB、USAGE_PERCENT）
+- `last_seen_at`、`last_reported_at`
 
 ### 删除服务器
 
@@ -515,7 +533,7 @@ axis region-list
 - `Axis`：控制平面，负责纳管、查询、状态维护与运维命令
 - `axis-node`：节点代理，负责以 node 身份向管理端注册自己
 - 管理端命令优先通过 `source /apps/Axis/axis-rc.sh` 后执行 `axis`
-- 节点注册优先通过 `axis-node register` 执行
+- 节点注册优先通过 `axis-node register` 或 `axis-node agent` 自动纳管
 - 生产环境推荐通过 systemd 运行 `axisd` 与 `axis-node`
 - `axis-node.service` 会默认把宿主机主机名注入为节点主机名
 
