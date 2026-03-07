@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/SamuelFan1/Axis/internal/domain/node"
 )
@@ -24,15 +25,29 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
     management_address VARCHAR(255) NOT NULL,
     region VARCHAR(64) NOT NULL,
     status VARCHAR(16) NOT NULL,
+    cpu_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    memory_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    disk_usage_percent DOUBLE NOT NULL DEFAULT 0,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     last_seen_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    last_reported_at DATETIME(6) NULL,
     UNIQUE KEY uk_management_address (management_address),
     KEY idx_region_status (region, status),
     KEY idx_last_seen_at (last_seen_at)
 )`
 	if _, err := r.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("create managed_nodes table: %w", err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS cpu_usage_percent DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_usage_percent DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS disk_usage_percent DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS last_reported_at DATETIME(6) NULL`,
+	} {
+		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("upgrade managed_nodes table: %w", err)
+		}
 	}
 	return nil
 }
@@ -45,9 +60,13 @@ SELECT
     management_address,
     region,
     status,
+    cpu_usage_percent,
+    memory_usage_percent,
+    disk_usage_percent,
     created_at,
     updated_at,
-    last_seen_at
+    last_seen_at,
+    last_reported_at
 FROM managed_nodes
 WHERE management_address = ?
 LIMIT 1`
@@ -59,9 +78,13 @@ LIMIT 1`
 		&item.ManagementAddress,
 		&item.Region,
 		&item.Status,
+		&item.CPUUsagePercent,
+		&item.MemoryUsagePercent,
+		&item.DiskUsagePercent,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 		&item.LastSeenAt,
+		&item.LastReportedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -81,9 +104,13 @@ SELECT
     management_address,
     region,
     status,
+    cpu_usage_percent,
+    memory_usage_percent,
+    disk_usage_percent,
     created_at,
     updated_at,
-    last_seen_at
+    last_seen_at,
+    last_reported_at
 FROM managed_nodes
 WHERE uuid = ?
 LIMIT 1`
@@ -95,9 +122,13 @@ LIMIT 1`
 		&item.ManagementAddress,
 		&item.Region,
 		&item.Status,
+		&item.CPUUsagePercent,
+		&item.MemoryUsagePercent,
+		&item.DiskUsagePercent,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 		&item.LastSeenAt,
+		&item.LastReportedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -112,17 +143,21 @@ LIMIT 1`
 func (r *NodeRepository) Upsert(ctx context.Context, item node.Node) error {
 	const query = `
 INSERT INTO managed_nodes (
-    uuid, hostname, management_address, region, status, created_at, updated_at, last_seen_at
+    uuid, hostname, management_address, region, status, cpu_usage_percent, memory_usage_percent, disk_usage_percent, created_at, updated_at, last_seen_at, last_reported_at
 ) VALUES (
-    ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6)
+    ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?
 )
 ON DUPLICATE KEY UPDATE
     hostname = VALUES(hostname),
     management_address = VALUES(management_address),
     region = VALUES(region),
     status = VALUES(status),
+    cpu_usage_percent = VALUES(cpu_usage_percent),
+    memory_usage_percent = VALUES(memory_usage_percent),
+    disk_usage_percent = VALUES(disk_usage_percent),
     updated_at = CURRENT_TIMESTAMP(6),
-    last_seen_at = CURRENT_TIMESTAMP(6)`
+    last_seen_at = CURRENT_TIMESTAMP(6),
+    last_reported_at = VALUES(last_reported_at)`
 
 	if _, err := r.db.ExecContext(
 		ctx,
@@ -132,8 +167,54 @@ ON DUPLICATE KEY UPDATE
 		item.ManagementAddress,
 		item.Region,
 		item.Status,
+		item.CPUUsagePercent,
+		item.MemoryUsagePercent,
+		item.DiskUsagePercent,
+		nullTime(item.LastReportedAt),
 	); err != nil {
 		return fmt.Errorf("upsert managed node: %w", err)
+	}
+	return nil
+}
+
+func (r *NodeRepository) UpdateHeartbeat(ctx context.Context, item node.Node) error {
+	const query = `
+UPDATE managed_nodes
+SET
+    hostname = ?,
+    management_address = ?,
+    region = ?,
+    status = ?,
+    cpu_usage_percent = ?,
+    memory_usage_percent = ?,
+    disk_usage_percent = ?,
+    updated_at = CURRENT_TIMESTAMP(6),
+    last_seen_at = CURRENT_TIMESTAMP(6),
+    last_reported_at = CURRENT_TIMESTAMP(6)
+WHERE uuid = ?`
+
+	result, err := r.db.ExecContext(
+		ctx,
+		query,
+		item.Hostname,
+		item.ManagementAddress,
+		item.Region,
+		item.Status,
+		item.CPUUsagePercent,
+		item.MemoryUsagePercent,
+		item.DiskUsagePercent,
+		item.UUID,
+	)
+	if err != nil {
+		return fmt.Errorf("update managed node heartbeat: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update managed node heartbeat rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }
@@ -146,9 +227,13 @@ SELECT
     management_address,
     region,
     status,
+    cpu_usage_percent,
+    memory_usage_percent,
+    disk_usage_percent,
     created_at,
     updated_at,
-    last_seen_at
+    last_seen_at,
+    last_reported_at
 FROM managed_nodes
 ORDER BY region ASC, hostname ASC, uuid ASC`
 
@@ -167,9 +252,13 @@ ORDER BY region ASC, hostname ASC, uuid ASC`
 			&item.ManagementAddress,
 			&item.Region,
 			&item.Status,
+			&item.CPUUsagePercent,
+			&item.MemoryUsagePercent,
+			&item.DiskUsagePercent,
 			&item.CreatedAt,
 			&item.UpdatedAt,
 			&item.LastSeenAt,
+			&item.LastReportedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan managed node: %w", err)
 		}
@@ -246,4 +335,11 @@ ORDER BY region ASC`
 		return nil, fmt.Errorf("iterate region summaries: %w", err)
 	}
 	return items, nil
+}
+
+func nullTime(value time.Time) interface{} {
+	if value.IsZero() {
+		return nil
+	}
+	return value
 }

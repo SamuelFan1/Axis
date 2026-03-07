@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/SamuelFan1/Axis/internal/domain/node"
 	"github.com/SamuelFan1/Axis/internal/service"
@@ -18,6 +19,10 @@ type registerNodeRequest struct {
 	ManagementAddress string `json:"management_address"`
 	Region            string `json:"region"`
 	Status            string `json:"status"`
+}
+
+type updateNodeStatusRequest struct {
+	Status string `json:"status"`
 }
 
 func NewNodeHandler(nodeService *service.NodeService) *NodeHandler {
@@ -68,6 +73,10 @@ func (h *NodeHandler) Register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *NodeHandler) RegisterAdmin(w http.ResponseWriter, r *http.Request) {
+	h.Register(w, r)
+}
+
 func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
@@ -88,6 +97,153 @@ func (h *NodeHandler) List(w http.ResponseWriter, r *http.Request) {
 		"nodes": items,
 		"count": len(items),
 	})
+}
+
+func (h *NodeHandler) Detail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	uuidValue, ok := extractNodeUUID(r.URL.Path, "/api/v1/nodes/")
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid node uuid path",
+		})
+		return
+	}
+
+	item, err := h.nodeService.GetByUUID(r.Context(), uuidValue)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if err.Error() == "node not found" {
+			statusCode = http.StatusNotFound
+		}
+		writeJSON(w, statusCode, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"node": item,
+	})
+}
+
+func (h *NodeHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	uuidValue, ok := extractNodeUUID(r.URL.Path, "/api/v1/nodes/")
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid node uuid path",
+		})
+		return
+	}
+
+	if err := h.nodeService.DeleteByUUID(r.Context(), uuidValue); err != nil {
+		statusCode := http.StatusBadRequest
+		if err.Error() == "node not found" {
+			statusCode = http.StatusNotFound
+		}
+		writeJSON(w, statusCode, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "node deleted",
+		"uuid":    uuidValue,
+	})
+}
+
+func (h *NodeHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	uuidValue, ok := extractNodeUUIDWithSuffix(r.URL.Path, "/api/v1/nodes/", "/status")
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid node uuid path",
+		})
+		return
+	}
+
+	var req updateNodeStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid json body",
+		})
+		return
+	}
+
+	item, err := h.nodeService.SetStatus(r.Context(), uuidValue, req.Status)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if err.Error() == "node not found" {
+			statusCode = http.StatusNotFound
+		}
+		writeJSON(w, statusCode, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "node status updated",
+		"node":    item,
+	})
+}
+
+func (h *NodeHandler) ListRegions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	items, err := h.nodeService.ListRegions(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"regions": items,
+		"count":   len(items),
+	})
+}
+
+func extractNodeUUID(path, prefix string) (string, bool) {
+	trimmed := strings.TrimPrefix(path, prefix)
+	trimmed = strings.Trim(trimmed, "/")
+	if trimmed == "" || strings.Contains(trimmed, "/") {
+		return "", false
+	}
+	return trimmed, true
+}
+
+func extractNodeUUIDWithSuffix(path, prefix, suffix string) (string, bool) {
+	if !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+	trimmed := strings.TrimSuffix(path, suffix)
+	return extractNodeUUID(trimmed, prefix)
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload interface{}) {

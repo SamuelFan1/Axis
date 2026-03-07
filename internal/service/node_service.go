@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -142,4 +143,66 @@ func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status st
 
 func (s *NodeService) ListRegions(ctx context.Context) ([]node.RegionSummary, error) {
 	return s.repo.ListRegions(ctx)
+}
+
+func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, error) {
+	item.UUID = strings.TrimSpace(item.UUID)
+	item.Hostname = strings.TrimSpace(item.Hostname)
+	item.ManagementAddress = strings.TrimSpace(item.ManagementAddress)
+	item.Region = strings.TrimSpace(item.Region)
+	item.Status = strings.ToLower(strings.TrimSpace(item.Status))
+
+	if item.UUID == "" {
+		return node.Node{}, fmt.Errorf("uuid is required")
+	}
+	if _, err := uuid.Parse(item.UUID); err != nil {
+		return node.Node{}, fmt.Errorf("uuid must be a valid UUID")
+	}
+	if item.Hostname == "" {
+		return node.Node{}, fmt.Errorf("hostname is required")
+	}
+	if item.ManagementAddress == "" {
+		return node.Node{}, fmt.Errorf("management_address is required")
+	}
+	if item.Region == "" {
+		return node.Node{}, fmt.Errorf("region is required")
+	}
+	if item.Status == "" {
+		item.Status = node.StatusUp
+	}
+	if !node.IsValidStatus(item.Status) {
+		return node.Node{}, fmt.Errorf("status must be up or down")
+	}
+	if err := validatePercent("cpu_usage_percent", item.CPUUsagePercent); err != nil {
+		return node.Node{}, err
+	}
+	if err := validatePercent("memory_usage_percent", item.MemoryUsagePercent); err != nil {
+		return node.Node{}, err
+	}
+	if err := validatePercent("disk_usage_percent", item.DiskUsagePercent); err != nil {
+		return node.Node{}, err
+	}
+
+	if err := s.repo.UpdateHeartbeat(ctx, item); err != nil {
+		if err == sql.ErrNoRows {
+			return node.Node{}, fmt.Errorf("node not found")
+		}
+		return node.Node{}, err
+	}
+
+	updated, err := s.repo.FindByUUID(ctx, item.UUID)
+	if err != nil {
+		return node.Node{}, err
+	}
+	if updated == nil {
+		return node.Node{}, fmt.Errorf("node not found")
+	}
+	return *updated, nil
+}
+
+func validatePercent(name string, value float64) error {
+	if value < 0 || value > 100 {
+		return fmt.Errorf("%s must be between 0 and 100", name)
+	}
+	return nil
 }

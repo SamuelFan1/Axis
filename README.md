@@ -382,6 +382,18 @@ cp .env.example .env
 go run ./cmd/axisd
 ```
 
+然后创建管理员 shell 环境文件：
+
+```bash
+cp axis-rc.sh.example axis-rc.sh
+```
+
+按你的环境修改 `axis-rc.sh` 中的管理端地址、管理员账号和密码，然后执行：
+
+```bash
+source /apps/Axis/axis-rc.sh
+```
+
 纳管服务器：
 
 ```bash
@@ -405,16 +417,91 @@ curl -X POST http://127.0.0.1:9090/api/v1/nodes/register \
 查看已纳管服务器：
 
 ```bash
-./axis service-list
+axis service-list
 ```
 
 说明：
 
-- `axisd` 和 `axis service-list` 都会优先从项目根目录 `.env` 读取数据库连接配置
-- 如果环境变量和 `.env` 同时存在，环境变量优先
-- 可通过 `AXIS_ENV_FILE` 指定其他 `.env` 路径
+- `axisd` 会优先从项目根目录 `.env` 读取数据库连接配置
+- `axis` CLI 不再直连 TiDB
+- `axis` CLI 只能通过管理端 HTTP API 工作
+- 使用 `axis` 前必须先 `source /apps/Axis/axis-rc.sh`
+- 未加载管理环境时，`axis` 会直接拒绝执行
 - `GET /api/v1/nodes` 为管理员接口，使用 HTTP Basic Auth
 - `POST /api/v1/nodes/register` 为 node 接口，使用 `X-Axis-Node-Token`
+- `POST /api/v1/admin/nodes/register` 为管理员显式纳管接口，使用 HTTP Basic Auth
+
+## CLI 管理命令
+
+### 注册服务器
+
+```bash
+axis service-register \
+  --hostname sgp-edge-01 \
+  --management-address 10.8.1.11:9090 \
+  --region sgp \
+  --status up
+```
+
+可选参数：
+
+- `--uuid`
+- `--status`
+
+说明：
+
+- 如果不传 `--uuid`，系统会自动生成 `uuid4`
+- 如果相同 `management_address` 已存在，会复用已有 UUID
+
+### 列出全部服务器
+
+```bash
+axis service-list
+```
+
+### 查看单台服务器
+
+```bash
+axis service-show <uuid>
+```
+
+### 删除服务器
+
+```bash
+axis service-delete <uuid>
+```
+
+### 设置服务器为 up
+
+```bash
+axis service-up <uuid>
+```
+
+### 设置服务器为 down
+
+```bash
+axis service-down <uuid>
+```
+
+### 查看区域聚合信息
+
+```bash
+axis region-list
+```
+
+输出字段：
+
+- `REGION`
+- `TOTAL`
+- `UP`
+- `DOWN`
+
+## 管理端与 node 端职责边界
+
+- `Axis`：控制平面，负责纳管、查询、状态维护与运维命令
+- `axis-node`：节点代理，负责以 node 身份向管理端注册自己
+- 管理端命令优先通过 `source /apps/Axis/axis-rc.sh` 后执行 `axis`
+- 节点注册优先通过 `axis-node register` 执行
 
 ## License
 

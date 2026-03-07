@@ -1,0 +1,5 @@
+export AXIS_PROFILE=admin
+export AXIS_API_URL=http://127.0.0.1:9090
+export AXIS_ADMIN_USERNAME=admin
+export AXIS_ADMIN_PASSWORD=change_me_now
+export PATH=/apps/Axis:$PATH

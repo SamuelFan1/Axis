@@ -13,9 +13,13 @@ type Node struct {
 	ManagementAddress string
 	Region            string
 	Status            string
+	CPUUsagePercent   float64
+	MemoryUsagePercent float64
+	DiskUsagePercent  float64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	LastSeenAt        time.Time
+	LastReportedAt    time.Time
 }
 
 func IsValidStatus(status string) bool {

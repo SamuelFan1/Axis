@@ -1,4 +1,5 @@
 .env
+axis-rc.sh
 data/
 bin/
 dist/

@@ -14,6 +14,13 @@ type Config struct {
 	DB   DBConfig
 }
 
+type CLIAuthConfig struct {
+	APIURL        string
+	AdminUsername string
+	AdminPassword string
+	Profile       string
+}
+
 type AppConfig struct {
 	HTTPAddress string
 }
@@ -79,6 +86,27 @@ func Load() (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.Auth.NodeSharedToken) == "" {
 		return nil, fmt.Errorf("AXIS_NODE_SHARED_TOKEN must be set")
+	}
+
+	return cfg, nil
+}
+
+func LoadCLIAuth() (*CLIAuthConfig, error) {
+	cfg := &CLIAuthConfig{
+		APIURL:        getEnv("AXIS_API_URL", ""),
+		AdminUsername: getEnv("AXIS_ADMIN_USERNAME", ""),
+		AdminPassword: getEnv("AXIS_ADMIN_PASSWORD", ""),
+		Profile:       getEnv("AXIS_PROFILE", ""),
+	}
+
+	if strings.TrimSpace(cfg.APIURL) == "" {
+		return nil, fmt.Errorf("AXIS_API_URL must be set")
+	}
+	if strings.TrimSpace(cfg.AdminUsername) == "" {
+		return nil, fmt.Errorf("AXIS_ADMIN_USERNAME must be set")
+	}
+	if strings.TrimSpace(cfg.AdminPassword) == "" {
+		return nil, fmt.Errorf("AXIS_ADMIN_PASSWORD must be set")
 	}
 
 	return cfg, nil
