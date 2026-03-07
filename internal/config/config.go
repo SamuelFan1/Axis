@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strconv"
@@ -9,11 +10,19 @@ import (
 
 type Config struct {
 	App AppConfig
+	Auth AuthConfig
 	DB  DBConfig
 }
 
 type AppConfig struct {
 	HTTPAddress string
+}
+
+type AuthConfig struct {
+	AdminUsername  string
+	AdminPassword  string
+	NodeSharedToken string
+	Realm          string
 }
 
 type DBConfig struct {
@@ -27,9 +36,17 @@ type DBConfig struct {
 }
 
 func Load() (*Config, error) {
+	loadEnvFile(getEnv("AXIS_ENV_FILE", ".env"))
+
 	cfg := &Config{
 		App: AppConfig{
 			HTTPAddress: getEnv("AXIS_HTTP_ADDRESS", ":9090"),
+		},
+		Auth: AuthConfig{
+			AdminUsername:  getEnv("AXIS_ADMIN_USERNAME", ""),
+			AdminPassword:  getEnv("AXIS_ADMIN_PASSWORD", ""),
+			NodeSharedToken: getEnv("AXIS_NODE_SHARED_TOKEN", ""),
+			Realm:          getEnv("AXIS_AUTH_REALM", "Axis Admin"),
 		},
 		DB: DBConfig{
 			Host:         getEnv("AXIS_DB_HOST", getEnv("DB_MASTER_HOST", "127.0.0.1")),
@@ -54,8 +71,50 @@ func Load() (*Config, error) {
 	if strings.TrimSpace(cfg.DB.Database) == "" {
 		return nil, fmt.Errorf("AXIS_DB_NAME must be set")
 	}
+	if strings.TrimSpace(cfg.Auth.AdminUsername) == "" {
+		return nil, fmt.Errorf("AXIS_ADMIN_USERNAME must be set")
+	}
+	if strings.TrimSpace(cfg.Auth.AdminPassword) == "" {
+		return nil, fmt.Errorf("AXIS_ADMIN_PASSWORD must be set")
+	}
+	if strings.TrimSpace(cfg.Auth.NodeSharedToken) == "" {
+		return nil, fmt.Errorf("AXIS_NODE_SHARED_TOKEN must be set")
+	}
 
 	return cfg, nil
+}
+
+func loadEnvFile(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+
+		value := strings.TrimSpace(parts[1])
+		value = strings.Trim(value, `"'`)
+		_ = os.Setenv(key, value)
+	}
 }
 
 func getEnv(key, defaultValue string) string {

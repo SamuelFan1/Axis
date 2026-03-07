@@ -362,15 +362,17 @@ Axis/
 
 ## Quick Start
 
+先创建 `.env`：
+
+```bash
+cp .env.example .env
+```
+
+然后按你的 TiDB 环境修改 `.env` 中的数据库连接参数。
+
 启动服务：
 
 ```bash
-AXIS_DB_HOST=127.0.0.1 \
-AXIS_DB_PORT=4000 \
-AXIS_DB_USER=root \
-AXIS_DB_PASSWORD=your_password \
-AXIS_DB_NAME=AXIS \
-AXIS_HTTP_ADDRESS=:9090 \
 go run ./cmd/axisd
 ```
 
@@ -398,6 +400,12 @@ curl -X POST http://127.0.0.1:9090/api/v1/nodes/register \
 ```bash
 ./axis service-list
 ```
+
+说明：
+
+- `axisd` 和 `axis service-list` 都会优先从项目根目录 `.env` 读取数据库连接配置
+- 如果环境变量和 `.env` 同时存在，环境变量优先
+- 可通过 `AXIS_ENV_FILE` 指定其他 `.env` 路径
 
 ## License
 

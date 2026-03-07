@@ -29,7 +29,7 @@ func main() {
 		log.Fatalf("ensure schema: %v", err)
 	}
 
-	server := httptransport.NewServer(cfg.App.HTTPAddress, nodeService)
+	server := httptransport.NewServer(cfg.App.HTTPAddress, cfg.Auth, nodeService)
 	if err := server.Run(); err != nil {
 		log.Fatalf("run http server: %v", err)
 	}
