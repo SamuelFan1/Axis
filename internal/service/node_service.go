@@ -69,3 +69,77 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 func (s *NodeService) List(ctx context.Context) ([]node.Node, error) {
 	return s.repo.List(ctx)
 }
+
+func (s *NodeService) GetByUUID(ctx context.Context, uuidValue string) (node.Node, error) {
+	uuidValue = strings.TrimSpace(uuidValue)
+	if uuidValue == "" {
+		return node.Node{}, fmt.Errorf("uuid is required")
+	}
+	if _, err := uuid.Parse(uuidValue); err != nil {
+		return node.Node{}, fmt.Errorf("uuid must be a valid UUID")
+	}
+
+	item, err := s.repo.FindByUUID(ctx, uuidValue)
+	if err != nil {
+		return node.Node{}, err
+	}
+	if item == nil {
+		return node.Node{}, fmt.Errorf("node not found")
+	}
+	return *item, nil
+}
+
+func (s *NodeService) DeleteByUUID(ctx context.Context, uuidValue string) error {
+	uuidValue = strings.TrimSpace(uuidValue)
+	if uuidValue == "" {
+		return fmt.Errorf("uuid is required")
+	}
+	if _, err := uuid.Parse(uuidValue); err != nil {
+		return fmt.Errorf("uuid must be a valid UUID")
+	}
+
+	deleted, err := s.repo.DeleteByUUID(ctx, uuidValue)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return fmt.Errorf("node not found")
+	}
+	return nil
+}
+
+func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status string) (node.Node, error) {
+	uuidValue = strings.TrimSpace(uuidValue)
+	status = strings.ToLower(strings.TrimSpace(status))
+
+	if uuidValue == "" {
+		return node.Node{}, fmt.Errorf("uuid is required")
+	}
+	if _, err := uuid.Parse(uuidValue); err != nil {
+		return node.Node{}, fmt.Errorf("uuid must be a valid UUID")
+	}
+	if !node.IsValidStatus(status) {
+		return node.Node{}, fmt.Errorf("status must be up or down")
+	}
+
+	updated, err := s.repo.UpdateStatus(ctx, uuidValue, status)
+	if err != nil {
+		return node.Node{}, err
+	}
+	if !updated {
+		return node.Node{}, fmt.Errorf("node not found")
+	}
+
+	item, err := s.repo.FindByUUID(ctx, uuidValue)
+	if err != nil {
+		return node.Node{}, err
+	}
+	if item == nil {
+		return node.Node{}, fmt.Errorf("node not found")
+	}
+	return *item, nil
+}
+
+func (s *NodeService) ListRegions(ctx context.Context) ([]node.RegionSummary, error) {
+	return s.repo.ListRegions(ctx)
+}

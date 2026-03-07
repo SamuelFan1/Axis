@@ -9,9 +9,9 @@ import (
 )
 
 type Config struct {
-	App AppConfig
+	App  AppConfig
 	Auth AuthConfig
-	DB  DBConfig
+	DB   DBConfig
 }
 
 type AppConfig struct {
@@ -19,10 +19,10 @@ type AppConfig struct {
 }
 
 type AuthConfig struct {
-	AdminUsername  string
-	AdminPassword  string
+	AdminUsername   string
+	AdminPassword   string
 	NodeSharedToken string
-	Realm          string
+	Realm           string
 }
 
 type DBConfig struct {
@@ -43,10 +43,10 @@ func Load() (*Config, error) {
 			HTTPAddress: getEnv("AXIS_HTTP_ADDRESS", ":9090"),
 		},
 		Auth: AuthConfig{
-			AdminUsername:  getEnv("AXIS_ADMIN_USERNAME", ""),
-			AdminPassword:  getEnv("AXIS_ADMIN_PASSWORD", ""),
+			AdminUsername:   getEnv("AXIS_ADMIN_USERNAME", ""),
+			AdminPassword:   getEnv("AXIS_ADMIN_PASSWORD", ""),
 			NodeSharedToken: getEnv("AXIS_NODE_SHARED_TOKEN", ""),
-			Realm:          getEnv("AXIS_AUTH_REALM", "Axis Admin"),
+			Realm:           getEnv("AXIS_AUTH_REALM", "Axis Admin"),
 		},
 		DB: DBConfig{
 			Host:         getEnv("AXIS_DB_HOST", getEnv("DB_MASTER_HOST", "127.0.0.1")),

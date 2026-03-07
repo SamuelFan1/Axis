@@ -370,6 +370,12 @@ cp .env.example .env
 
 然后按你的 TiDB 环境修改 `.env` 中的数据库连接参数。
 
+同时在 `.env` 中设置管理员鉴权与 node 注册共享密钥：
+
+- `AXIS_ADMIN_USERNAME`
+- `AXIS_ADMIN_PASSWORD`
+- `AXIS_NODE_SHARED_TOKEN`
+
 启动服务：
 
 ```bash
@@ -381,6 +387,7 @@ go run ./cmd/axisd
 ```bash
 curl -X POST http://127.0.0.1:9090/api/v1/nodes/register \
   -H "Content-Type: application/json" \
+  -H "X-Axis-Node-Token: your_node_shared_token" \
   -d '{
     "hostname": "sgp-edge-01",
     "management_address": "10.8.1.11:9090",
@@ -406,6 +413,8 @@ curl -X POST http://127.0.0.1:9090/api/v1/nodes/register \
 - `axisd` 和 `axis service-list` 都会优先从项目根目录 `.env` 读取数据库连接配置
 - 如果环境变量和 `.env` 同时存在，环境变量优先
 - 可通过 `AXIS_ENV_FILE` 指定其他 `.env` 路径
+- `GET /api/v1/nodes` 为管理员接口，使用 HTTP Basic Auth
+- `POST /api/v1/nodes/register` 为 node 接口，使用 `X-Axis-Node-Token`
 
 ## License
 
