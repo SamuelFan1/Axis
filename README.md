@@ -1,6 +1,6 @@
 # Axis
 
-Axis 是 NetStone 的独立控制平面系统，负责区域节点管理、健康状态采集、容量视图、调度支撑与后续控制面编排能力。
+Axis 是一个独立的控制平面系统，负责区域节点管理、健康状态采集、容量视图、调度支撑与后续控制面编排能力。
 
 ## 项目定位
 
@@ -42,7 +42,7 @@ Axis/
   cmd/
     axisd/
       main.go
-    axisctl/
+    axis/
       main.go
 
   internal/
@@ -104,7 +104,7 @@ Axis/
 放所有可执行程序入口。
 
 - `cmd/axisd/`：Axis 服务主进程入口
-- `cmd/axisctl/`：后续运维命令行工具入口
+- `cmd/axis/`：Axis 运维命令行工具入口
 
 要求：
 
@@ -359,6 +359,45 @@ Axis/
 - 已创建项目根目录
 - 已定义标准目录规范
 - 后续代码实现将严格按此 README 执行
+
+## Quick Start
+
+启动服务：
+
+```bash
+AXIS_DB_HOST=127.0.0.1 \
+AXIS_DB_PORT=4000 \
+AXIS_DB_USER=root \
+AXIS_DB_PASSWORD=your_password \
+AXIS_DB_NAME=AXIS \
+AXIS_HTTP_ADDRESS=:9090 \
+go run ./cmd/axisd
+```
+
+纳管服务器：
+
+```bash
+curl -X POST http://127.0.0.1:9090/api/v1/nodes/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hostname": "sgp-edge-01",
+    "management_address": "10.8.1.11:9090",
+    "status": "up",
+    "region": "sgp"
+  }'
+```
+
+说明：
+
+- `uuid` 可选
+- 如果未提供，管理端会自动生成 `uuid4`
+- 同一 `management_address` 再次纳管时会复用已有 UUID
+
+查看已纳管服务器：
+
+```bash
+./axis service-list
+```
 
 ## License
 
