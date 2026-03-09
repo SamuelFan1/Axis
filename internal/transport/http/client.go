@@ -28,6 +28,7 @@ type RegisterNodeRequest struct {
 	Hostname          string `json:"hostname"`
 	ManagementAddress string `json:"management_address"`
 	Region            string `json:"region"`
+	Zone              string `json:"zone"`
 	Status            string `json:"status"`
 }
 
@@ -38,6 +39,7 @@ type registerNodeResponse struct {
 		Hostname          string `json:"hostname"`
 		ManagementAddress string `json:"management_address"`
 		Region            string `json:"region"`
+		Zone              string `json:"zone"`
 		Status            string `json:"status"`
 	} `json:"node"`
 	Error string `json:"error"`
@@ -70,10 +72,22 @@ type deleteNodeResponse struct {
 	Error   string `json:"error"`
 }
 
+type listRegionZonesResponse struct {
+	RegionZones []node.RegionZoneSummary `json:"region_zones"`
+	Count       int                     `json:"count"`
+	Error       string                  `json:"error"`
+}
+
 type listRegionsResponse struct {
-	Regions []node.RegionSummary `json:"regions"`
-	Count   int                  `json:"count"`
-	Error   string               `json:"error"`
+	Regions []regionListItem `json:"regions"`
+	Count   int              `json:"count"`
+	Error   string          `json:"error"`
+}
+
+type regionListItem struct {
+	UUID    string `json:"uuid"`
+	Name    string `json:"name"`
+	ZoneNum int    `json:"zone_num"`
 }
 
 func NewClient(cfg config.CLIAuthConfig) *Client {
@@ -97,6 +111,7 @@ func (c *Client) RegisterNode(req RegisterNodeRequest) (node.Node, error) {
 		Hostname:          resp.Node.Hostname,
 		ManagementAddress: resp.Node.ManagementAddress,
 		Region:            resp.Node.Region,
+		Zone:              resp.Node.Zone,
 		Status:            resp.Node.Status,
 	}, nil
 }
@@ -130,12 +145,78 @@ func (c *Client) UpdateNodeStatus(uuid string, status string) (node.Node, error)
 	return resp.Node, nil
 }
 
-func (c *Client) ListRegions() ([]node.RegionSummary, error) {
+func (c *Client) ListRegions() ([]regionListItem, error) {
 	var resp listRegionsResponse
 	if err := c.doJSON(nethttp.MethodGet, "/api/v1/regions", nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Regions, nil
+}
+
+func (c *Client) CreateRegion(name string) (uuid, regionName string, err error) {
+	var resp struct {
+		Message string `json:"message"`
+		Region  struct {
+			UUID string `json:"uuid"`
+			Name string `json:"name"`
+		} `json:"region"`
+		Error string `json:"error"`
+	}
+	if err := c.doJSON(nethttp.MethodPost, "/api/v1/regions", map[string]string{"name": name}, &resp); err != nil {
+		return "", "", err
+	}
+	return resp.Region.UUID, resp.Region.Name, nil
+}
+
+func (c *Client) DeleteRegion(uuid string) error {
+	var resp struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	return c.doJSON(nethttp.MethodDelete, "/api/v1/regions/"+uuid, nil, &resp)
+}
+
+type zoneListItem struct {
+	UUID      string `json:"uuid"`
+	Name      string `json:"name"`
+	Total     int    `json:"total"`
+	UpCount   int    `json:"up_count"`
+	DownCount int    `json:"down_count"`
+}
+
+func (c *Client) ListZones() ([]zoneListItem, error) {
+	var resp struct {
+		Zones []zoneListItem `json:"zones"`
+		Count int            `json:"count"`
+		Error string         `json:"error"`
+	}
+	if err := c.doJSON(nethttp.MethodGet, "/api/v1/zones", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Zones, nil
+}
+
+func (c *Client) CreateZone(name string) (uuid, zoneName string, err error) {
+	var resp struct {
+		Message string `json:"message"`
+		Zone    struct {
+			UUID string `json:"uuid"`
+			Name string `json:"name"`
+		} `json:"zone"`
+		Error string `json:"error"`
+	}
+	if err := c.doJSON(nethttp.MethodPost, "/api/v1/zones", map[string]string{"name": name}, &resp); err != nil {
+		return "", "", err
+	}
+	return resp.Zone.UUID, resp.Zone.Name, nil
+}
+
+func (c *Client) DeleteZone(uuid string) error {
+	var resp struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	return c.doJSON(nethttp.MethodDelete, "/api/v1/zones/"+uuid, nil, &resp)
 }
 
 func (c *Client) doJSON(method, path string, reqBody interface{}, out interface{}) error {

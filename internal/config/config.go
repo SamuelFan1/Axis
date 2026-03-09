@@ -9,10 +9,16 @@ import (
 )
 
 type Config struct {
-	App  AppConfig
-	Auth AuthConfig
-	DB   DBConfig
-	DNS  DNSConfig
+	App    AppConfig
+	Auth   AuthConfig
+	DB     DBConfig
+	DNS    DNSConfig
+	Region RegionConfig
+}
+
+type RegionConfig struct {
+	Regions    []string
+	RegionZones map[string][]string
 }
 
 type CLIAuthConfig struct {
@@ -90,6 +96,7 @@ func Load() (*Config, error) {
 			Proxied:            getEnvBool("AXIS_DNS_PROXIED", false),
 			CloudflareAPIToken: getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
 		},
+		Region: loadRegionConfig(),
 	}
 
 	if strings.TrimSpace(cfg.DB.Host) == "" {
@@ -201,6 +208,62 @@ func loadEnvFile(path string) {
 		value = strings.Trim(value, `"'`)
 		_ = os.Setenv(key, value)
 	}
+}
+
+func loadRegionConfig() RegionConfig {
+	regions := getEnvSlice("AXIS_REGIONS", ",", "asia,europe,australia,north_america,south_america")
+	regionZones := make(map[string][]string)
+	for _, r := range regions {
+		key := "AXIS_REGION_" + strings.ToUpper(strings.ReplaceAll(r, "-", "_")) + "_ZONES"
+		zones := getEnvSlice(key, ",", "")
+		if len(zones) > 0 {
+			regionZones[r] = zones
+		}
+	}
+	return RegionConfig{
+		Regions:     regions,
+		RegionZones: regionZones,
+	}
+}
+
+func getEnvSlice(key, sep, defaultValue string) []string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		value = defaultValue
+	}
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, sep)
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func (c *RegionConfig) ValidateRegionZone(region, zone string) error {
+	region = strings.TrimSpace(strings.ToLower(region))
+	zone = strings.TrimSpace(strings.ToUpper(zone))
+	if region == "" {
+		return fmt.Errorf("region is required")
+	}
+	if zone == "" {
+		return fmt.Errorf("zone is required")
+	}
+	allowedZones, configured := c.RegionZones[region]
+	if !configured {
+		return nil
+	}
+	for _, z := range allowedZones {
+		if strings.TrimSpace(strings.ToUpper(z)) == zone {
+			return nil
+		}
+	}
+	return fmt.Errorf("zone %q is not allowed for region %q", zone, region)
 }
 
 func getEnv(key, defaultValue string) string {

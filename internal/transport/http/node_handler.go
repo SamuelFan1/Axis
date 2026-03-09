@@ -18,6 +18,7 @@ type registerNodeRequest struct {
 	Hostname          string `json:"hostname"`
 	ManagementAddress string `json:"management_address"`
 	Region            string `json:"region"`
+	Zone              string `json:"zone"`
 	Status            string `json:"status"`
 }
 
@@ -32,6 +33,7 @@ type reportNodeRequest struct {
 	InternalIP         string           `json:"internal_ip"`
 	PublicIP           string           `json:"public_ip"`
 	Region             string           `json:"region"`
+	Zone               string           `json:"zone"`
 	Status             string           `json:"status"`
 	CPUCores           int              `json:"cpu_cores"`
 	CPUUsagePercent    float64          `json:"cpu_usage_percent"`
@@ -70,6 +72,7 @@ func (h *NodeHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Hostname:          req.Hostname,
 		ManagementAddress: req.ManagementAddress,
 		Region:            req.Region,
+		Zone:              req.Zone,
 		Status:            req.Status,
 	}
 
@@ -88,6 +91,7 @@ func (h *NodeHandler) Register(w http.ResponseWriter, r *http.Request) {
 			"hostname":           registered.Hostname,
 			"management_address": registered.ManagementAddress,
 			"region":             registered.Region,
+			"zone":               registered.Zone,
 			"status":             registered.Status,
 		},
 	})
@@ -120,6 +124,7 @@ func (h *NodeHandler) Report(w http.ResponseWriter, r *http.Request) {
 		InternalIP:          req.InternalIP,
 		PublicIP:            req.PublicIP,
 		Region:              req.Region,
+		Zone:                req.Zone,
 		Status:              req.Status,
 		CPUCores:            req.CPUCores,
 		CPUUsagePercent:     req.CPUUsagePercent,
@@ -287,7 +292,7 @@ func (h *NodeHandler) ListRegions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.nodeService.ListRegions(r.Context())
+	items, err := h.nodeService.ListRegionZones(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"error": err.Error(),
@@ -296,8 +301,8 @@ func (h *NodeHandler) ListRegions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"regions": items,
-		"count":   len(items),
+		"region_zones": items,
+		"count":        len(items),
 	})
 }
 

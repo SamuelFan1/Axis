@@ -24,6 +24,9 @@ type Node struct {
 	DNSLabel           string       `json:"dns_label"`
 	DNSName            string       `json:"dns_name"`
 	Region             string       `json:"region"`
+	RegionUUID         string       `json:"region_uuid,omitempty"`
+	Zone               string       `json:"zone"`
+	ZoneUUID           string       `json:"zone_uuid,omitempty"`
 	Status             string       `json:"status"`
 	CPUCores           int          `json:"cpu_cores"`
 	CPUUsagePercent    float64      `json:"cpu_usage_percent"`

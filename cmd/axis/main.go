@@ -61,6 +61,32 @@ func main() {
 		if err := runRegionList(); err != nil {
 			log.Fatalf("region-list: %v", err)
 		}
+	case "region-create":
+		if err := runRegionCreate(os.Args[2:]); err != nil {
+			log.Fatalf("region-create: %v", err)
+		}
+	case "region-delete":
+		if len(os.Args) < 3 {
+			log.Fatalf("region-delete: uuid is required")
+		}
+		if err := runRegionDelete(os.Args[2]); err != nil {
+			log.Fatalf("region-delete: %v", err)
+		}
+	case "zone-list":
+		if err := runZoneList(); err != nil {
+			log.Fatalf("zone-list: %v", err)
+		}
+	case "zone-create":
+		if err := runZoneCreate(os.Args[2:]); err != nil {
+			log.Fatalf("zone-create: %v", err)
+		}
+	case "zone-delete":
+		if len(os.Args) < 3 {
+			log.Fatalf("zone-delete: uuid is required")
+		}
+		if err := runZoneDelete(os.Args[2]); err != nil {
+			log.Fatalf("zone-delete: %v", err)
+		}
 	default:
 		printUsage()
 		os.Exit(1)
@@ -72,7 +98,8 @@ func runServiceRegister(args []string) error {
 	uuidValue := fs.String("uuid", "", "existing node uuid (optional)")
 	hostname := fs.String("hostname", "", "node hostname")
 	managementAddress := fs.String("management-address", "", "node management address")
-	region := fs.String("region", "", "node region")
+	region := fs.String("region", "", "node region (continent)")
+	zone := fs.String("zone", "", "node zone (country code, e.g. SG, US)")
 	status := fs.String("status", node.StatusUp, "node status: up or down")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -88,6 +115,7 @@ func runServiceRegister(args []string) error {
 		Hostname:          *hostname,
 		ManagementAddress: *managementAddress,
 		Region:            *region,
+		Zone:              *zone,
 		Status:            *status,
 	})
 	if err != nil {
@@ -100,6 +128,7 @@ func runServiceRegister(args []string) error {
 		{"INTERNAL_IP", extractInternalIP(registered.ManagementAddress)},
 		{"STATUS", registered.Status},
 		{"REGION", registered.Region},
+		{"ZONE", registered.Zone},
 	})
 	return nil
 }
@@ -129,9 +158,10 @@ func runServiceList() error {
 			item.DNSName,
 			item.Status,
 			item.Region,
+			item.Zone,
 		})
 	}
-	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "REGION"}, rows)
+	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "REGION", "ZONE"}, rows)
 	return nil
 }
 
@@ -159,6 +189,7 @@ func runServiceShow(uuidValue string) error {
 		{"DNS_NAME", item.DNSName},
 		{"STATUS", item.Status},
 		{"REGION", item.Region},
+		{"ZONE", item.Zone},
 		{"CPU_CORES", fmt.Sprintf("%d cores", item.CPUCores)},
 		{"CPU_USAGE_PERCENT", fmt.Sprintf("%.1f%%", item.CPUUsagePercent)},
 		{"MEMORY_TOTAL_GB", fmt.Sprintf("%.2f GB", item.MemoryTotalGB)},
@@ -239,13 +270,113 @@ func runRegionList() error {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
 		rows = append(rows, []string{
-			item.Region,
+			item.UUID,
+			item.Name,
+			fmt.Sprintf("%d", item.ZoneNum),
+		})
+	}
+	printTable("REGION_LIST_RESULT", []string{"UUID", "NAME", "ZONE_NUM"}, rows)
+	return nil
+}
+
+func runRegionCreate(args []string) error {
+	fs := flag.NewFlagSet("region-create", flag.ContinueOnError)
+	name := fs.String("name", "", "region name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return fmt.Errorf("--name is required")
+	}
+	client, err := loadAPIClient()
+	if err != nil {
+		return err
+	}
+	uuid, regionName, err := client.CreateRegion(*name)
+	if err != nil {
+		return err
+	}
+	printRecord("REGION_CREATE_RESULT", [][2]string{
+		{"UUID", uuid},
+		{"NAME", regionName},
+	})
+	return nil
+}
+
+func runRegionDelete(uuidValue string) error {
+	client, err := loadAPIClient()
+	if err != nil {
+		return err
+	}
+	if err := client.DeleteRegion(uuidValue); err != nil {
+		return err
+	}
+	printRecord("REGION_DELETE_RESULT", [][2]string{
+		{"UUID", uuidValue},
+		{"RESULT", "deleted"},
+	})
+	return nil
+}
+
+func runZoneList() error {
+	client, err := loadAPIClient()
+	if err != nil {
+		return err
+	}
+	items, err := client.ListZones()
+	if err != nil {
+		return err
+	}
+	rows := make([][]string, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, []string{
+			item.UUID,
+			item.Name,
 			fmt.Sprintf("%d", item.Total),
 			fmt.Sprintf("%d", item.UpCount),
 			fmt.Sprintf("%d", item.DownCount),
 		})
 	}
-	printTable("REGION_LIST_RESULT", []string{"REGION", "TOTAL", "UP", "DOWN"}, rows)
+	printTable("ZONE_LIST_RESULT", []string{"UUID", "NAME", "TOTAL", "UP", "DOWN"}, rows)
+	return nil
+}
+
+func runZoneCreate(args []string) error {
+	fs := flag.NewFlagSet("zone-create", flag.ContinueOnError)
+	name := fs.String("name", "", "zone name (e.g. SG, CN)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return fmt.Errorf("--name is required")
+	}
+	client, err := loadAPIClient()
+	if err != nil {
+		return err
+	}
+	uuid, zoneName, err := client.CreateZone(*name)
+	if err != nil {
+		return err
+	}
+	printRecord("ZONE_CREATE_RESULT", [][2]string{
+		{"UUID", uuid},
+		{"NAME", zoneName},
+	})
+	return nil
+}
+
+func runZoneDelete(uuidValue string) error {
+	client, err := loadAPIClient()
+	if err != nil {
+		return err
+	}
+	if err := client.DeleteZone(uuidValue); err != nil {
+		return err
+	}
+	printRecord("ZONE_DELETE_RESULT", [][2]string{
+		{"UUID", uuidValue},
+		{"RESULT", "deleted"},
+	})
 	return nil
 }
 
@@ -261,13 +392,18 @@ func printUsage() {
 	fmt.Println("Axis CLI")
 	fmt.Println("")
 	fmt.Println("Usage:")
-	fmt.Println("  axis service-register --hostname <name> --management-address <addr> --region <region> [--status up] [--uuid <uuid>]")
+	fmt.Println("  axis service-register --hostname <name> --management-address <addr> --region <region> --zone <zone> [--status up] [--uuid <uuid>]")
 	fmt.Println("  axis service-list")
 	fmt.Println("  axis service-show <uuid>")
 	fmt.Println("  axis service-delete <uuid>")
 	fmt.Println("  axis service-up <uuid>")
 	fmt.Println("  axis service-down <uuid>")
 	fmt.Println("  axis region-list")
+	fmt.Println("  axis region-create --name <name>")
+	fmt.Println("  axis region-delete <uuid>")
+	fmt.Println("  axis zone-list")
+	fmt.Println("  axis zone-create --name <name>")
+	fmt.Println("  axis zone-delete <uuid>")
 }
 
 func printTable(title string, headers []string, rows [][]string) {

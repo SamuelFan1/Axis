@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
     dns_label VARCHAR(64) NULL DEFAULT NULL,
     dns_name VARCHAR(255) NULL DEFAULT NULL,
     region VARCHAR(64) NOT NULL,
+    zone VARCHAR(16) NOT NULL DEFAULT '',
     status VARCHAR(16) NOT NULL,
     cpu_cores INT NOT NULL DEFAULT 0,
     cpu_usage_percent DOUBLE NOT NULL DEFAULT 0,
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
     UNIQUE KEY uk_dns_label (dns_label),
     UNIQUE KEY uk_dns_name (dns_name),
     KEY idx_region_status (region, status),
+    KEY idx_region_zone_status (region, zone, status),
     KEY idx_last_seen_at (last_seen_at)
 )`
 	if _, err := r.db.ExecContext(ctx, ddl); err != nil {
@@ -74,6 +76,9 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_used_gb DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_usage_percent DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS disk_details JSON NULL`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone VARCHAR(16) NOT NULL DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS region_uuid VARCHAR(36) NULL DEFAULT NULL`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone_uuid VARCHAR(36) NULL DEFAULT NULL`,
 	} {
 		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("upgrade managed_nodes table: %w", err)
@@ -83,6 +88,15 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 		return err
 	}
 	if err := ensureUniqueIndex(ctx, r.db, "managed_nodes", "uk_dns_name", "dns_name"); err != nil {
+		return err
+	}
+	if err := ensureIndex(ctx, r.db, "managed_nodes", "idx_region_zone_status", "region, zone, status"); err != nil {
+		return err
+	}
+	if err := ensureIndex(ctx, r.db, "managed_nodes", "idx_region_uuid", "region_uuid"); err != nil {
+		return err
+	}
+	if err := ensureIndex(ctx, r.db, "managed_nodes", "idx_zone_uuid", "zone_uuid"); err != nil {
 		return err
 	}
 	return nil
@@ -97,6 +111,9 @@ const selectNodeColumns = `
     dns_label,
     dns_name,
     region,
+    region_uuid,
+    zone,
+    zone_uuid,
     status,
     cpu_cores,
     cpu_usage_percent,
@@ -152,14 +169,17 @@ LIMIT 1`
 func (r *NodeRepository) Upsert(ctx context.Context, item node.Node) error {
 	const query = `
 INSERT INTO managed_nodes (
-    uuid, hostname, management_address, region, status, cpu_usage_percent, memory_usage_percent, disk_usage_percent, created_at, updated_at, last_seen_at, last_reported_at
+    uuid, hostname, management_address, region, region_uuid, zone, zone_uuid, status, cpu_usage_percent, memory_usage_percent, disk_usage_percent, created_at, updated_at, last_seen_at, last_reported_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?
 )
 ON DUPLICATE KEY UPDATE
     hostname = VALUES(hostname),
     management_address = VALUES(management_address),
     region = VALUES(region),
+    region_uuid = VALUES(region_uuid),
+    zone = VALUES(zone),
+    zone_uuid = VALUES(zone_uuid),
     status = VALUES(status),
     cpu_usage_percent = VALUES(cpu_usage_percent),
     memory_usage_percent = VALUES(memory_usage_percent),
@@ -175,6 +195,8 @@ ON DUPLICATE KEY UPDATE
 		item.Hostname,
 		item.ManagementAddress,
 		item.Region,
+		nullString(item.RegionUUID),
+		item.Zone,
 		item.Status,
 		item.CPUUsagePercent,
 		item.MemoryUsagePercent,
@@ -196,6 +218,9 @@ SET
     internal_ip = ?,
     public_ip = ?,
     region = ?,
+    region_uuid = ?,
+    zone = ?,
+    zone_uuid = ?,
     status = ?,
     cpu_cores = ?,
     cpu_usage_percent = ?,
@@ -220,6 +245,9 @@ WHERE uuid = ?`
 		item.InternalIP,
 		item.PublicIP,
 		item.Region,
+		nullString(item.RegionUUID),
+		item.Zone,
+		nullString(item.ZoneUUID),
 		item.Status,
 		item.CPUCores,
 		item.CPUUsagePercent,
@@ -274,7 +302,7 @@ func (r *NodeRepository) EnsureDNSBinding(ctx context.Context, uuid, prefix, zon
 func (r *NodeRepository) List(ctx context.Context) ([]node.Node, error) {
 	const query = `SELECT` + selectNodeColumns + `
 FROM managed_nodes
-ORDER BY region ASC, hostname ASC, uuid ASC`
+ORDER BY region ASC, zone ASC, hostname ASC, uuid ASC`
 
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
@@ -363,6 +391,44 @@ ORDER BY region ASC`
 	return items, nil
 }
 
+func (r *NodeRepository) ListRegionZones(ctx context.Context) ([]node.RegionZoneSummary, error) {
+	const query = `
+SELECT
+    region,
+    zone,
+    COUNT(*) AS total,
+    SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END) AS up_count,
+    SUM(CASE WHEN status = 'down' THEN 1 ELSE 0 END) AS down_count
+FROM managed_nodes
+GROUP BY region, zone
+ORDER BY region ASC, zone ASC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list region zone summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var items []node.RegionZoneSummary
+	for rows.Next() {
+		var item node.RegionZoneSummary
+		if err := rows.Scan(
+			&item.Region,
+			&item.Zone,
+			&item.Total,
+			&item.UpCount,
+			&item.DownCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan region zone summary: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate region zone summaries: %w", err)
+	}
+	return items, nil
+}
+
 func (r *NodeRepository) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int) (int, error) {
 	if timeoutSec <= 0 {
 		timeoutSec = 30
@@ -394,6 +460,13 @@ func nullTime(value time.Time) interface{} {
 	return value
 }
 
+func nullString(value string) interface{} {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 type scanner interface {
 	Scan(dest ...interface{}) error
 }
@@ -402,6 +475,8 @@ func scanNode(src scanner, item *node.Node) error {
 	var lastReportedAt sql.NullTime
 	var dnsLabel sql.NullString
 	var dnsName sql.NullString
+	var regionUUID sql.NullString
+	var zoneUUID sql.NullString
 	var diskDetailsRaw []byte
 	if err := src.Scan(
 		&item.UUID,
@@ -412,6 +487,9 @@ func scanNode(src scanner, item *node.Node) error {
 		&dnsLabel,
 		&dnsName,
 		&item.Region,
+		&regionUUID,
+		&item.Zone,
+		&zoneUUID,
 		&item.Status,
 		&item.CPUCores,
 		&item.CPUUsagePercent,
@@ -438,6 +516,12 @@ func scanNode(src scanner, item *node.Node) error {
 	}
 	if dnsName.Valid {
 		item.DNSName = dnsName.String
+	}
+	if regionUUID.Valid {
+		item.RegionUUID = regionUUID.String
+	}
+	if zoneUUID.Valid {
+		item.ZoneUUID = zoneUUID.String
 	}
 	if len(diskDetailsRaw) > 0 {
 		_ = json.Unmarshal(diskDetailsRaw, &item.DiskDetails)
@@ -564,6 +648,33 @@ func ensureUniqueIndex(ctx context.Context, db *sql.DB, tableName, indexName, co
 	}
 
 	stmt := fmt.Sprintf("ALTER TABLE %s ADD UNIQUE INDEX %s (%s)", tableName, indexName, columnName)
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		if isDuplicateKeyNameError(err) {
+			return nil
+		}
+		return fmt.Errorf("create index %s: %w", indexName, err)
+	}
+	return nil
+}
+
+func ensureIndex(ctx context.Context, db *sql.DB, tableName, indexName, columns string) error {
+	var existingCount int
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(1)
+		 FROM information_schema.statistics
+		 WHERE table_schema = DATABASE()
+		   AND table_name = ?
+		   AND index_name = ?`,
+		tableName,
+		indexName,
+	).Scan(&existingCount); err != nil {
+		return fmt.Errorf("check index %s: %w", indexName, err)
+	}
+	if existingCount > 0 {
+		return nil
+	}
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD INDEX %s (%s)", tableName, indexName, columns)
 	if _, err := db.ExecContext(ctx, stmt); err != nil {
 		if isDuplicateKeyNameError(err) {
 			return nil

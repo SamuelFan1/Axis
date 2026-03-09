@@ -14,16 +14,22 @@ import (
 )
 
 type NodeService struct {
-	repo        repository.NodeRepository
-	dnsProvider platformdns.Provider
-	dnsConfig   config.DNSConfig
+	repo         repository.NodeRepository
+	regionRepo   repository.RegionRepository
+	zoneRepo     repository.ZoneRepository
+	dnsProvider  platformdns.Provider
+	dnsConfig    config.DNSConfig
+	regionConfig config.RegionConfig
 }
 
-func NewNodeService(repo repository.NodeRepository, dnsProvider platformdns.Provider, dnsConfig config.DNSConfig) *NodeService {
+func NewNodeService(repo repository.NodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsConfig config.DNSConfig, regionConfig config.RegionConfig) *NodeService {
 	return &NodeService{
-		repo:        repo,
-		dnsProvider: dnsProvider,
-		dnsConfig:   dnsConfig,
+		repo:         repo,
+		regionRepo:   regionRepo,
+		zoneRepo:     zoneRepo,
+		dnsProvider:  dnsProvider,
+		dnsConfig:    dnsConfig,
+		regionConfig: regionConfig,
 	}
 }
 
@@ -34,7 +40,8 @@ func (s *NodeService) EnsureSchema(ctx context.Context) error {
 func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, error) {
 	item.Hostname = strings.TrimSpace(item.Hostname)
 	item.ManagementAddress = strings.TrimSpace(item.ManagementAddress)
-	item.Region = strings.TrimSpace(item.Region)
+	item.Region = strings.TrimSpace(strings.ToLower(item.Region))
+	item.Zone = strings.TrimSpace(strings.ToUpper(item.Zone))
 	item.Status = strings.ToLower(strings.TrimSpace(item.Status))
 
 	if item.Hostname == "" {
@@ -45,6 +52,28 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 	}
 	if item.Region == "" {
 		return node.Node{}, fmt.Errorf("region is required")
+	}
+	if item.Zone == "" {
+		return node.Node{}, fmt.Errorf("zone is required")
+	}
+	r, err := s.regionRepo.FindByName(ctx, item.Region)
+	if err != nil {
+		return node.Node{}, fmt.Errorf("find region: %w", err)
+	}
+	if r == nil {
+		return node.Node{}, fmt.Errorf("region %q not found", item.Region)
+	}
+	item.RegionUUID = r.UUID
+	z, err := s.zoneRepo.FindByName(ctx, item.Zone)
+	if err != nil {
+		return node.Node{}, fmt.Errorf("find zone: %w", err)
+	}
+	if z == nil {
+		return node.Node{}, fmt.Errorf("zone %q not found", item.Zone)
+	}
+	item.ZoneUUID = z.UUID
+	if err := s.regionConfig.ValidateRegionZone(item.Region, item.Zone); err != nil {
+		return node.Node{}, err
 	}
 	if item.Status == "" {
 		item.Status = node.StatusUp
@@ -153,13 +182,18 @@ func (s *NodeService) ListRegions(ctx context.Context) ([]node.RegionSummary, er
 	return s.repo.ListRegions(ctx)
 }
 
+func (s *NodeService) ListRegionZones(ctx context.Context) ([]node.RegionZoneSummary, error) {
+	return s.repo.ListRegionZones(ctx)
+}
+
 func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, error) {
 	item.UUID = strings.TrimSpace(item.UUID)
 	item.Hostname = strings.TrimSpace(item.Hostname)
 	item.ManagementAddress = strings.TrimSpace(item.ManagementAddress)
 	item.InternalIP = strings.TrimSpace(item.InternalIP)
 	item.PublicIP = strings.TrimSpace(item.PublicIP)
-	item.Region = strings.TrimSpace(item.Region)
+	item.Region = strings.TrimSpace(strings.ToLower(item.Region))
+	item.Zone = strings.TrimSpace(strings.ToUpper(item.Zone))
 	item.Status = strings.ToLower(strings.TrimSpace(item.Status))
 
 	if item.UUID == "" {
@@ -176,6 +210,28 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	}
 	if item.Region == "" {
 		return node.Node{}, fmt.Errorf("region is required")
+	}
+	if item.Zone == "" {
+		return node.Node{}, fmt.Errorf("zone is required")
+	}
+	r, err := s.regionRepo.FindByName(ctx, item.Region)
+	if err != nil {
+		return node.Node{}, fmt.Errorf("find region: %w", err)
+	}
+	if r == nil {
+		return node.Node{}, fmt.Errorf("region %q not found", item.Region)
+	}
+	item.RegionUUID = r.UUID
+	z, err := s.zoneRepo.FindByName(ctx, item.Zone)
+	if err != nil {
+		return node.Node{}, fmt.Errorf("find zone: %w", err)
+	}
+	if z == nil {
+		return node.Node{}, fmt.Errorf("zone %q not found", item.Zone)
+	}
+	item.ZoneUUID = z.UUID
+	if err := s.regionConfig.ValidateRegionZone(item.Region, item.Zone); err != nil {
+		return node.Node{}, err
 	}
 	if item.Status == "" {
 		item.Status = node.StatusUp
