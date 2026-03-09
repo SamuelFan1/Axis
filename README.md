@@ -378,6 +378,17 @@ cp .env.example .env
 - `AXIS_NODE_TIMEOUT_SEC`
 - `AXIS_NODE_MONITOR_INTERVAL_SEC`
 
+如需启用可选 DNS 自动化，还需要配置：
+
+- `AXIS_DNS_ENABLED=true`
+- `AXIS_DNS_PROVIDER=cloudflare`
+- `AXIS_DNS_ZONE=github.com`
+- `AXIS_DNS_RECORD_PREFIX=dl-`
+- `AXIS_DNS_RECORD_TYPE=A`
+- `AXIS_DNS_TTL=1`
+- `AXIS_DNS_PROXIED=false`
+- `AXIS_DNS_CLOUDFLARE_API_TOKEN`
+
 启动服务：
 
 ```bash
@@ -451,6 +462,36 @@ axis service-list
 - 如果超过 `AXIS_NODE_TIMEOUT_SEC` 秒未收到上报，控制端会自动把节点状态置为 `down`
 - 控制端按 `AXIS_NODE_MONITOR_INTERVAL_SEC` 周期扫描超时节点
 - 建议 `AXIS_NODE_TIMEOUT_SEC` 明显大于 `AXIS_NODE_REPORT_INTERVAL_SEC`
+- DNS 自动化是可选能力；未配置或未启用时，Axis 不会调用任何 DNS 服务商接口
+
+## 可选 DNS 模块
+
+Axis 可在 node 首次成功上报 `public_ip` 后，自动为该 node 分配稳定的子域名并写入 DNS 解析。
+
+当前支持：
+
+- 服务商：`cloudflare`
+- 记录类型：`A`
+- 记录值：node 当前上报的 `public_ip`
+
+配置项：
+
+- `AXIS_DNS_ENABLED`：是否启用，默认 `false`
+- `AXIS_DNS_PROVIDER`：当前固定为 `cloudflare`
+- `AXIS_DNS_ZONE`：目标根域，例如 `github.com`
+- `AXIS_DNS_RECORD_PREFIX`：记录前缀，默认 `dl-`
+- `AXIS_DNS_RECORD_TYPE`：默认且当前仅支持 `A`
+- `AXIS_DNS_TTL`：Cloudflare TTL，默认 `1`（自动）
+- `AXIS_DNS_PROXIED`：是否启用 Cloudflare 代理，默认 `false`
+- `AXIS_DNS_CLOUDFLARE_API_TOKEN`：Cloudflare API Token，必须具备目标 Zone 的 DNS 编辑权限
+
+分配规则：
+
+- 当 `AXIS_DNS_RECORD_PREFIX=dl-` 时，首个成功分配的记录为 `dl-001.<zone>`
+- 后续新增 node 依次递增为 `dl-002.<zone>`、`dl-003.<zone>` ...
+- 同一个 node 一旦完成分配，后续重启或重复上报都会稳定复用原 `dns_name`
+- 如果 node 后续上报的公网 IP 发生变化，Axis 会继续使用原域名并更新对应 `A` 记录
+- 只有 `public_ip` 非空时才会触发 DNS 写入；公网 IP 探测失败不会阻塞基础纳管和心跳数据落库
 
 ## CLI 管理命令
 

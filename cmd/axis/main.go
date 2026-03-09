@@ -126,11 +126,12 @@ func runServiceList() error {
 			item.Hostname,
 			internalIP,
 			item.PublicIP,
+			item.DNSName,
 			item.Status,
 			item.Region,
 		})
 	}
-	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "STATUS", "REGION"}, rows)
+	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "REGION"}, rows)
 	return nil
 }
 
@@ -155,6 +156,7 @@ func runServiceShow(uuidValue string) error {
 		{"HOSTNAME", item.Hostname},
 		{"INTERNAL_IP", internalIP},
 		{"PUBLIC_IP", item.PublicIP},
+		{"DNS_NAME", item.DNSName},
 		{"STATUS", item.Status},
 		{"REGION", item.Region},
 		{"CPU_CORES", fmt.Sprintf("%d cores", item.CPUCores)},

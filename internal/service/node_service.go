@@ -6,17 +6,25 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SamuelFan1/Axis/internal/config"
 	"github.com/SamuelFan1/Axis/internal/domain/node"
+	platformdns "github.com/SamuelFan1/Axis/internal/platform/dns"
 	"github.com/SamuelFan1/Axis/internal/repository"
 	"github.com/google/uuid"
 )
 
 type NodeService struct {
-	repo repository.NodeRepository
+	repo        repository.NodeRepository
+	dnsProvider platformdns.Provider
+	dnsConfig   config.DNSConfig
 }
 
-func NewNodeService(repo repository.NodeRepository) *NodeService {
-	return &NodeService{repo: repo}
+func NewNodeService(repo repository.NodeRepository, dnsProvider platformdns.Provider, dnsConfig config.DNSConfig) *NodeService {
+	return &NodeService{
+		repo:        repo,
+		dnsProvider: dnsProvider,
+		dnsConfig:   dnsConfig,
+	}
 }
 
 func (s *NodeService) EnsureSchema(ctx context.Context) error {
@@ -149,6 +157,8 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	item.UUID = strings.TrimSpace(item.UUID)
 	item.Hostname = strings.TrimSpace(item.Hostname)
 	item.ManagementAddress = strings.TrimSpace(item.ManagementAddress)
+	item.InternalIP = strings.TrimSpace(item.InternalIP)
+	item.PublicIP = strings.TrimSpace(item.PublicIP)
 	item.Region = strings.TrimSpace(item.Region)
 	item.Status = strings.ToLower(strings.TrimSpace(item.Status))
 
@@ -201,6 +211,31 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	}
 	if updated == nil {
 		return node.Node{}, fmt.Errorf("node not found")
+	}
+
+	if !s.dnsConfig.Enabled || s.dnsProvider == nil || !s.dnsProvider.Enabled() {
+		return *updated, nil
+	}
+	if updated.PublicIP == "" {
+		return *updated, nil
+	}
+	if updated.DNSName == "" {
+		updated, err = s.repo.EnsureDNSBinding(ctx, item.UUID, s.dnsConfig.RecordPrefix, s.dnsConfig.Zone)
+		if err != nil {
+			return node.Node{}, err
+		}
+		if updated == nil {
+			return node.Node{}, fmt.Errorf("node not found")
+		}
+	}
+	if err := s.dnsProvider.EnsureRecord(ctx, platformdns.Record{
+		Name:    updated.DNSName,
+		Type:    s.dnsConfig.RecordType,
+		Content: updated.PublicIP,
+		TTL:     s.dnsConfig.TTL,
+		Proxied: s.dnsConfig.Proxied,
+	}); err != nil {
+		return node.Node{}, err
 	}
 	return *updated, nil
 }

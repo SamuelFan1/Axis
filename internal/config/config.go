@@ -12,6 +12,7 @@ type Config struct {
 	App  AppConfig
 	Auth AuthConfig
 	DB   DBConfig
+	DNS  DNSConfig
 }
 
 type CLIAuthConfig struct {
@@ -44,6 +45,17 @@ type DBConfig struct {
 	MaxIdleConns int
 }
 
+type DNSConfig struct {
+	Enabled            bool
+	Provider           string
+	Zone               string
+	RecordPrefix       string
+	RecordType         string
+	TTL                int
+	Proxied            bool
+	CloudflareAPIToken string
+}
+
 func Load() (*Config, error) {
 	loadEnvFile(getEnv("AXIS_ENV_FILE", ".env"))
 
@@ -67,6 +79,16 @@ func Load() (*Config, error) {
 			Database:     getEnv("AXIS_DB_NAME", "AXIS"),
 			MaxOpenConns: getEnvInt("AXIS_DB_MAX_OPEN_CONNS", 10),
 			MaxIdleConns: getEnvInt("AXIS_DB_MAX_IDLE_CONNS", 5),
+		},
+		DNS: DNSConfig{
+			Enabled:            getEnvBool("AXIS_DNS_ENABLED", false),
+			Provider:           strings.ToLower(getEnv("AXIS_DNS_PROVIDER", "")),
+			Zone:               strings.TrimSpace(getEnv("AXIS_DNS_ZONE", "")),
+			RecordPrefix:       getEnv("AXIS_DNS_RECORD_PREFIX", "dl-"),
+			RecordType:         strings.ToUpper(getEnv("AXIS_DNS_RECORD_TYPE", "A")),
+			TTL:                getEnvInt("AXIS_DNS_TTL", 1),
+			Proxied:            getEnvBool("AXIS_DNS_PROXIED", false),
+			CloudflareAPIToken: getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
 		},
 	}
 
@@ -96,6 +118,32 @@ func Load() (*Config, error) {
 	}
 	if cfg.App.NodeMonitorIntervalSec <= 0 {
 		cfg.App.NodeMonitorIntervalSec = 5
+	}
+	if strings.TrimSpace(cfg.DNS.RecordPrefix) == "" {
+		cfg.DNS.RecordPrefix = "dl-"
+	}
+	if cfg.DNS.RecordType == "" {
+		cfg.DNS.RecordType = "A"
+	}
+	if cfg.DNS.TTL < 0 {
+		cfg.DNS.TTL = 1
+	}
+	if cfg.DNS.Enabled {
+		if cfg.DNS.Provider != "cloudflare" {
+			return nil, fmt.Errorf("AXIS_DNS_PROVIDER must be cloudflare when AXIS_DNS_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.DNS.Zone) == "" {
+			return nil, fmt.Errorf("AXIS_DNS_ZONE must be set when AXIS_DNS_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.DNS.RecordPrefix) == "" {
+			return nil, fmt.Errorf("AXIS_DNS_RECORD_PREFIX must be set when AXIS_DNS_ENABLED is true")
+		}
+		if cfg.DNS.RecordType != "A" {
+			return nil, fmt.Errorf("AXIS_DNS_RECORD_TYPE must be A")
+		}
+		if strings.TrimSpace(cfg.DNS.CloudflareAPIToken) == "" {
+			return nil, fmt.Errorf("AXIS_DNS_CLOUDFLARE_API_TOKEN must be set when AXIS_DNS_ENABLED is true")
+		}
 	}
 
 	return cfg, nil
@@ -168,6 +216,18 @@ func getEnvInt(key string, defaultValue int) int {
 		return defaultValue
 	}
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		return defaultValue
 	}

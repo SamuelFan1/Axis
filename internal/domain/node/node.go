@@ -16,27 +16,29 @@ type DiskDetail struct {
 }
 
 type Node struct {
-	UUID               string
-	Hostname           string
-	ManagementAddress  string
-	InternalIP         string
-	PublicIP           string
-	Region             string
-	Status             string
-	CPUCores           int
-	CPUUsagePercent    float64
-	MemoryTotalGB      float64
-	MemoryUsedGB       float64
-	MemoryUsagePercent float64
-	SwapTotalGB        float64
-	SwapUsedGB         float64
-	SwapUsagePercent   float64
-	DiskUsagePercent   float64
-	DiskDetails        []DiskDetail
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	LastSeenAt         time.Time
-	LastReportedAt     time.Time
+	UUID               string       `json:"uuid"`
+	Hostname           string       `json:"hostname"`
+	ManagementAddress  string       `json:"management_address"`
+	InternalIP         string       `json:"internal_ip"`
+	PublicIP           string       `json:"public_ip"`
+	DNSLabel           string       `json:"dns_label"`
+	DNSName            string       `json:"dns_name"`
+	Region             string       `json:"region"`
+	Status             string       `json:"status"`
+	CPUCores           int          `json:"cpu_cores"`
+	CPUUsagePercent    float64      `json:"cpu_usage_percent"`
+	MemoryTotalGB      float64      `json:"memory_total_gb"`
+	MemoryUsedGB       float64      `json:"memory_used_gb"`
+	MemoryUsagePercent float64      `json:"memory_usage_percent"`
+	SwapTotalGB        float64      `json:"swap_total_gb"`
+	SwapUsedGB         float64      `json:"swap_used_gb"`
+	SwapUsagePercent   float64      `json:"swap_usage_percent"`
+	DiskUsagePercent   float64      `json:"disk_usage_percent"`
+	DiskDetails        []DiskDetail `json:"disk_details"`
+	CreatedAt          time.Time    `json:"created_at"`
+	UpdatedAt          time.Time    `json:"updated_at"`
+	LastSeenAt         time.Time    `json:"last_seen_at"`
+	LastReportedAt     time.Time    `json:"last_reported_at"`
 }
 
 func IsValidStatus(status string) bool {

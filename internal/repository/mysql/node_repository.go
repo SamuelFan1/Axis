@@ -4,10 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SamuelFan1/Axis/internal/domain/node"
+	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 type NodeRepository struct {
@@ -24,16 +29,29 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
     uuid VARCHAR(36) PRIMARY KEY,
     hostname VARCHAR(255) NOT NULL,
     management_address VARCHAR(255) NOT NULL,
+    internal_ip VARCHAR(64) DEFAULT '',
+    public_ip VARCHAR(64) DEFAULT '',
+    dns_label VARCHAR(64) NULL DEFAULT NULL,
+    dns_name VARCHAR(255) NULL DEFAULT NULL,
     region VARCHAR(64) NOT NULL,
     status VARCHAR(16) NOT NULL,
+    cpu_cores INT NOT NULL DEFAULT 0,
     cpu_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    memory_total_gb DOUBLE NOT NULL DEFAULT 0,
+    memory_used_gb DOUBLE NOT NULL DEFAULT 0,
     memory_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    swap_total_gb DOUBLE NOT NULL DEFAULT 0,
+    swap_used_gb DOUBLE NOT NULL DEFAULT 0,
+    swap_usage_percent DOUBLE NOT NULL DEFAULT 0,
     disk_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    disk_details JSON NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     last_seen_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     last_reported_at DATETIME(6) NULL,
     UNIQUE KEY uk_management_address (management_address),
+    UNIQUE KEY uk_dns_label (dns_label),
+    UNIQUE KEY uk_dns_name (dns_name),
     KEY idx_region_status (region, status),
     KEY idx_last_seen_at (last_seen_at)
 )`
@@ -47,6 +65,8 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS last_reported_at DATETIME(6) NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS internal_ip VARCHAR(64) DEFAULT ''`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS public_ip VARCHAR(64) DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS dns_label VARCHAR(64) NULL DEFAULT NULL`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS dns_name VARCHAR(255) NULL DEFAULT NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS cpu_cores INT NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_total_gb DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_used_gb DOUBLE NOT NULL DEFAULT 0`,
@@ -59,6 +79,12 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 			return fmt.Errorf("upgrade managed_nodes table: %w", err)
 		}
 	}
+	if err := ensureUniqueIndex(ctx, r.db, "managed_nodes", "uk_dns_label", "dns_label"); err != nil {
+		return err
+	}
+	if err := ensureUniqueIndex(ctx, r.db, "managed_nodes", "uk_dns_name", "dns_name"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -68,6 +94,8 @@ const selectNodeColumns = `
     management_address,
     internal_ip,
     public_ip,
+    dns_label,
+    dns_name,
     region,
     status,
     cpu_cores,
@@ -219,6 +247,30 @@ WHERE uuid = ?`
 	return nil
 }
 
+func (r *NodeRepository) EnsureDNSBinding(ctx context.Context, uuid, prefix, zone string) (*node.Node, error) {
+	prefix = strings.TrimSpace(prefix)
+	zone = strings.TrimSpace(zone)
+	if prefix == "" {
+		return nil, fmt.Errorf("dns prefix is required")
+	}
+	if zone == "" {
+		return nil, fmt.Errorf("dns zone is required")
+	}
+
+	for attempt := 0; attempt < 8; attempt++ {
+		item, err := r.ensureDNSBindingOnce(ctx, uuid, prefix, zone)
+		if err == nil {
+			return item, nil
+		}
+		if isDuplicateEntryError(err) {
+			continue
+		}
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("allocate dns binding: retry limit exceeded")
+}
+
 func (r *NodeRepository) List(ctx context.Context) ([]node.Node, error) {
 	const query = `SELECT` + selectNodeColumns + `
 FROM managed_nodes
@@ -348,6 +400,8 @@ type scanner interface {
 
 func scanNode(src scanner, item *node.Node) error {
 	var lastReportedAt sql.NullTime
+	var dnsLabel sql.NullString
+	var dnsName sql.NullString
 	var diskDetailsRaw []byte
 	if err := src.Scan(
 		&item.UUID,
@@ -355,6 +409,8 @@ func scanNode(src scanner, item *node.Node) error {
 		&item.ManagementAddress,
 		&item.InternalIP,
 		&item.PublicIP,
+		&dnsLabel,
+		&dnsName,
 		&item.Region,
 		&item.Status,
 		&item.CPUCores,
@@ -377,6 +433,12 @@ func scanNode(src scanner, item *node.Node) error {
 	if lastReportedAt.Valid {
 		item.LastReportedAt = lastReportedAt.Time
 	}
+	if dnsLabel.Valid {
+		item.DNSLabel = dnsLabel.String
+	}
+	if dnsName.Valid {
+		item.DNSName = dnsName.String
+	}
 	if len(diskDetailsRaw) > 0 {
 		_ = json.Unmarshal(diskDetailsRaw, &item.DiskDetails)
 	}
@@ -392,4 +454,154 @@ func marshalDiskDetails(details []node.DiskDetail) interface{} {
 		return nil
 	}
 	return b
+}
+
+func (r *NodeRepository) ensureDNSBindingOnce(ctx context.Context, uuid, prefix, zone string) (*node.Node, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin dns binding tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	var currentLabel sql.NullString
+	var currentName sql.NullString
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT dns_label, dns_name FROM managed_nodes WHERE uuid = ? FOR UPDATE`,
+		uuid,
+	).Scan(&currentLabel, &currentName)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("node not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("select current dns binding: %w", err)
+	}
+	if currentLabel.Valid && strings.TrimSpace(currentLabel.String) != "" && currentName.Valid && strings.TrimSpace(currentName.String) != "" {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit existing dns binding tx: %w", err)
+		}
+		return r.FindByUUID(ctx, uuid)
+	}
+
+	rows, err := tx.QueryContext(
+		ctx,
+		`SELECT dns_label FROM managed_nodes WHERE dns_label LIKE ?`,
+		prefix+"%",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list existing dns labels: %w", err)
+	}
+	defer rows.Close()
+
+	maxSequence := 0
+	for rows.Next() {
+		var raw sql.NullString
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("scan dns label: %w", err)
+		}
+		if !raw.Valid {
+			continue
+		}
+		value := strings.TrimSpace(raw.String)
+		sequence, ok := parseDNSSequence(prefix, value)
+		if ok && sequence > maxSequence {
+			maxSequence = sequence
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dns labels: %w", err)
+	}
+
+	nextLabel := fmt.Sprintf("%s%03d", prefix, maxSequence+1)
+	nextName := buildDNSName(nextLabel, zone)
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE managed_nodes
+		 SET dns_label = ?, dns_name = ?, updated_at = CURRENT_TIMESTAMP(6)
+		 WHERE uuid = ?
+		   AND (dns_label IS NULL OR dns_label = '')`,
+		nextLabel,
+		nextName,
+		uuid,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update dns binding: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("update dns binding rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit unchanged dns binding tx: %w", err)
+		}
+		return r.FindByUUID(ctx, uuid)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit dns binding tx: %w", err)
+	}
+	return r.FindByUUID(ctx, uuid)
+}
+
+func ensureUniqueIndex(ctx context.Context, db *sql.DB, tableName, indexName, columnName string) error {
+	var existingCount int
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(1)
+		 FROM information_schema.statistics
+		 WHERE table_schema = DATABASE()
+		   AND table_name = ?
+		   AND index_name = ?`,
+		tableName,
+		indexName,
+	).Scan(&existingCount); err != nil {
+		return fmt.Errorf("check index %s: %w", indexName, err)
+	}
+	if existingCount > 0 {
+		return nil
+	}
+
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD UNIQUE INDEX %s (%s)", tableName, indexName, columnName)
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		if isDuplicateKeyNameError(err) {
+			return nil
+		}
+		return fmt.Errorf("create index %s: %w", indexName, err)
+	}
+	return nil
+}
+
+func parseDNSSequence(prefix, label string) (int, bool) {
+	if !strings.HasPrefix(label, prefix) {
+		return 0, false
+	}
+	suffix := strings.TrimPrefix(label, prefix)
+	if suffix == "" {
+		return 0, false
+	}
+	if matched, _ := regexp.MatchString(`^[0-9]+$`, suffix); !matched {
+		return 0, false
+	}
+	value, err := strconv.Atoi(suffix)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func buildDNSName(label, zone string) string {
+	trimmedZone := strings.Trim(strings.TrimSpace(zone), ".")
+	return label + "." + trimmedZone
+}
+
+func isDuplicateEntryError(err error) bool {
+	var mysqlErr *mysqldriver.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
+}
+
+func isDuplicateKeyNameError(err error) bool {
+	var mysqlErr *mysqldriver.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1061
 }

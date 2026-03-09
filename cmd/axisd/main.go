@@ -6,6 +6,7 @@ import (
 
 	"github.com/SamuelFan1/Axis/internal/bootstrap"
 	"github.com/SamuelFan1/Axis/internal/config"
+	platformdns "github.com/SamuelFan1/Axis/internal/platform/dns"
 	"github.com/SamuelFan1/Axis/internal/repository/mysql"
 	"github.com/SamuelFan1/Axis/internal/service"
 	httptransport "github.com/SamuelFan1/Axis/internal/transport/http"
@@ -25,7 +26,11 @@ func main() {
 	defer db.Close()
 
 	nodeRepo := mysql.NewNodeRepository(db)
-	nodeService := service.NewNodeService(nodeRepo)
+	dnsProvider := platformdns.NewNoopProvider()
+	if cfg.DNS.Enabled && cfg.DNS.Provider == "cloudflare" {
+		dnsProvider = platformdns.NewCloudflareProvider(cfg.DNS)
+	}
+	nodeService := service.NewNodeService(nodeRepo, dnsProvider, cfg.DNS)
 	if err := nodeService.EnsureSchema(context.Background()); err != nil {
 		log.Fatalf("ensure schema: %v", err)
 	}
