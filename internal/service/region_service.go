@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SamuelFan1/Axis/internal/config"
 	"github.com/SamuelFan1/Axis/internal/domain/region"
 	"github.com/SamuelFan1/Axis/internal/repository"
 	"github.com/google/uuid"
@@ -13,21 +14,43 @@ import (
 type RegionService struct {
 	regionRepo repository.RegionRepository
 	nodeRepo   repository.NodeRepository
+	config     config.RegionConfig
 }
 
-func NewRegionService(regionRepo repository.RegionRepository, nodeRepo repository.NodeRepository) *RegionService {
+func NewRegionService(regionRepo repository.RegionRepository, nodeRepo repository.NodeRepository, cfg config.RegionConfig) *RegionService {
 	return &RegionService{
 		regionRepo: regionRepo,
 		nodeRepo:   nodeRepo,
+		config:     cfg,
 	}
 }
 
 func (s *RegionService) Create(ctx context.Context, name string) (region.Region, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return region.Region{}, fmt.Errorf("region name is required")
+	name = strings.TrimSpace(strings.ToLower(name))
+	if err := s.config.ValidateRegion(name); err != nil {
+		return region.Region{}, err
 	}
 	return s.regionRepo.Create(ctx, name)
+}
+
+func (s *RegionService) EnsureConfigured(ctx context.Context) error {
+	for _, name := range s.config.Regions {
+		normalized := strings.TrimSpace(strings.ToLower(name))
+		if normalized == "" {
+			continue
+		}
+		existing, err := s.regionRepo.FindByName(ctx, normalized)
+		if err != nil {
+			return fmt.Errorf("find configured region %q: %w", normalized, err)
+		}
+		if existing != nil {
+			continue
+		}
+		if _, err := s.regionRepo.Create(ctx, normalized); err != nil {
+			return fmt.Errorf("create configured region %q: %w", normalized, err)
+		}
+	}
+	return nil
 }
 
 func (s *RegionService) List(ctx context.Context) ([]region.RegionListItem, error) {

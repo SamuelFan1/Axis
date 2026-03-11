@@ -35,6 +35,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/v1/nodes/register", nodeTokenMiddleware(s.authConfig, s.nodeHandler.Register))
 	mux.HandleFunc("/api/v1/nodes/report", nodeTokenMiddleware(s.authConfig, s.nodeHandler.Report))
 	mux.HandleFunc("/api/v1/admin/nodes/register", adminAuthMiddleware(s.authConfig, s.nodeHandler.RegisterAdmin))
+	mux.HandleFunc("/api/v1/nodes/assign", adminAuthMiddleware(s.authConfig, s.nodeHandler.Assign))
 	mux.HandleFunc("/api/v1/nodes", adminAuthMiddleware(s.authConfig, s.nodeHandler.List))
 	mux.HandleFunc("/api/v1/regions", adminAuthMiddleware(s.authConfig, s.routeRegions))
 	mux.HandleFunc("/api/v1/regions/", adminAuthMiddleware(s.authConfig, s.routeRegionByUUID))

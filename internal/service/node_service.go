@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 
 	"github.com/SamuelFan1/Axis/internal/config"
@@ -186,6 +187,46 @@ func (s *NodeService) ListRegionZones(ctx context.Context) ([]node.RegionZoneSum
 	return s.repo.ListRegionZones(ctx)
 }
 
+func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zone string) (node.Node, error) {
+	region = strings.TrimSpace(strings.ToLower(region))
+	zone = strings.TrimSpace(strings.ToUpper(zone))
+
+	if region == "" {
+		return node.Node{}, fmt.Errorf("region is required")
+	}
+	if zone == "" {
+		return node.Node{}, fmt.Errorf("zone is required")
+	}
+	if err := s.regionConfig.ValidateRegionZone(region, zone); err != nil {
+		return node.Node{}, err
+	}
+
+	items, err := s.repo.List(ctx)
+	if err != nil {
+		return node.Node{}, err
+	}
+
+	regionCandidates := filterUpNodesByRegion(items, region)
+	if len(regionCandidates) == 0 {
+		return node.Node{}, fmt.Errorf("node not found")
+	}
+
+	zoneCandidates := filterNodesByZone(regionCandidates, zone)
+	if len(zoneCandidates) > 0 {
+		selected, ok := pickLowestScoreNode(zoneCandidates)
+		if !ok {
+			return node.Node{}, fmt.Errorf("node not found")
+		}
+		return selected, nil
+	}
+
+	selected, ok := pickLowestScoreNode(regionCandidates)
+	if !ok {
+		return node.Node{}, fmt.Errorf("node not found")
+	}
+	return selected, nil
+}
+
 func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, error) {
 	item.UUID = strings.TrimSpace(item.UUID)
 	item.Hostname = strings.TrimSpace(item.Hostname)
@@ -296,6 +337,56 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	return *updated, nil
 }
 
+func weightedScore(item node.Node) float64 {
+	return item.DiskUsagePercent*0.5 + item.CPUUsagePercent*0.3 + item.MemoryUsagePercent*0.2
+}
+
+func filterUpNodesByRegion(items []node.Node, region string) []node.Node {
+	candidates := make([]node.Node, 0, len(items))
+	for _, item := range items {
+		if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusUp {
+			continue
+		}
+		if strings.TrimSpace(strings.ToLower(item.Region)) != region {
+			continue
+		}
+		candidates = append(candidates, item)
+	}
+	return candidates
+}
+
+func filterNodesByZone(items []node.Node, zone string) []node.Node {
+	candidates := make([]node.Node, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(strings.ToUpper(item.Zone)) != zone {
+			continue
+		}
+		candidates = append(candidates, item)
+	}
+	return candidates
+}
+
+func pickLowestScoreNode(items []node.Node) (node.Node, bool) {
+	if len(items) == 0 {
+		return node.Node{}, false
+	}
+
+	bestScore := weightedScore(items[0])
+	bestItems := []node.Node{items[0]}
+	for _, item := range items[1:] {
+		score := weightedScore(item)
+		switch {
+		case score < bestScore:
+			bestScore = score
+			bestItems = []node.Node{item}
+		case score == bestScore:
+			bestItems = append(bestItems, item)
+		}
+	}
+
+	return bestItems[rand.IntN(len(bestItems))], true
+}
+
 func validatePercent(name string, value float64) error {
 	if value < 0 || value > 100 {
 		return fmt.Errorf("%s must be between 0 and 100", name)
@@ -307,5 +398,5 @@ func (s *NodeService) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int)
 	if timeoutSec <= 0 {
 		timeoutSec = 30
 	}
-	return s.repo.MarkTimedOutNodesDown(ctx, timeoutSec)
+	return s.repo.MarkTimedOutNodesDown(ctx, s.regionConfig.LocalRegion, timeoutSec)
 }

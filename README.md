@@ -389,10 +389,13 @@ cp .env.example .env
 - `AXIS_DNS_PROXIED=false`
 - `AXIS_DNS_CLOUDFLARE_API_TOKEN`
 
-区域与可用区配置（参考 Cloudflare ISO-3166-1 alpha-2）：
+区域与可用区配置（参考 ISO-3166-1 alpha-2）：
 
 - `AXIS_REGIONS`：大洲列表，默认 `asia,europe,australia,north_america,south_america`
-- `AXIS_REGION_ASIA_ZONES`、`AXIS_REGION_EUROPE_ZONES` 等：各大洲允许的 zone（国家代码），逗号分隔；未配置则不校验
+- `AXIS_LOCAL_REGION`：当前这台 `axisd` 所属区域，只用于本地超时下线监控
+- `AXIS_REGION_ASIA_ZONES`、`AXIS_REGION_EUROPE_ZONES` 等：各大洲允许的 zone（国家代码），逗号分隔
+- 建议只在权威区域先创建标准 `regions` 与 `zones`，再通过 `AXIS` 同步扩散到其他区域
+- 不在 `AXIS_REGIONS` 或对应 `AXIS_REGION_*_ZONES` 中的值不应被创建为主数据
 
 启动服务：
 
@@ -447,6 +450,7 @@ curl -X POST http://127.0.0.1:9090/api/v1/nodes/register \
 - `uuid` 可选
 - `region` 为大洲：asia、europe、australia、north_america、south_america
 - `zone` 为可用区，ISO-3166-1 alpha-2 国家代码（如 SG、CN、US）
+- 只有已在配置中声明的 `region/zone` 组合才能纳管或上报
 - 如果未提供，管理端会自动生成 `uuid4`
 - 同一 `management_address` 再次纳管时会复用已有 UUID
 
@@ -467,10 +471,43 @@ axis service-list
 - `POST /api/v1/nodes/register` 为 node 接口，使用 `X-Axis-Node-Token`
 - `POST /api/v1/admin/nodes/register` 为管理员显式纳管接口，使用 HTTP Basic Auth
 - `POST /api/v1/nodes/report` 为 node 指标上报接口，使用 `X-Axis-Node-Token`
+- `GET /api/v1/nodes/assign` 为管理员分配接口，使用 HTTP Basic Auth
 - 如果超过 `AXIS_NODE_TIMEOUT_SEC` 秒未收到上报，控制端会自动把节点状态置为 `down`
-- 控制端按 `AXIS_NODE_MONITOR_INTERVAL_SEC` 周期扫描超时节点
+- 控制端按 `AXIS_NODE_MONITOR_INTERVAL_SEC` 周期扫描超时节点；配置 `AXIS_LOCAL_REGION` 后只扫描本区域节点，防止多区域互相覆盖 `status`
 - 建议 `AXIS_NODE_TIMEOUT_SEC` 明显大于 `AXIS_NODE_REPORT_INTERVAL_SEC`
 - DNS 自动化是可选能力；未配置或未启用时，Axis 不会调用任何 DNS 服务商接口
+
+分配接口示例：
+
+```bash
+curl -u admin:password \
+  "http://127.0.0.1:9090/api/v1/nodes/assign?region=asia&zone=SG"
+```
+
+分配规则：
+
+- 请求必须同时提供 `region` 和 `zone`
+- 只会在 `status=up` 的节点中选择
+- 优先在指定 `zone` 内选择；如果该 `zone` 没有任何 `up` 节点，则回退到同 `region` 内选择
+- 加权分数公式为 `disk_usage_percent * 0.5 + cpu_usage_percent * 0.3 + memory_usage_percent * 0.2`
+- 分数越低越优先；如果多台节点分数完全相同，则在并列最低分节点中随机返回 1 台
+- 成功返回完整 `node` 信息
+- 本期不包含“资源特殊需求阈值”过滤
+
+## 多区域运维注意事项
+
+AXIS 数据通过 TiCDC 跨区同步，每个区域都有完整数据副本；但 `axisd` 的节点状态监控（`MarkTimedOutNodesDown`）默认作用于**全局节点**。
+
+**必须**为每个区域的 `axisd` 配置 `AXIS_LOCAL_REGION`，使超时下线只扫描本区节点，否则每个区域的超时监控会互相把别区节点打成 `down`：
+
+```env
+# /apps/Axis/.env（以亚洲为例）
+AXIS_LOCAL_REGION=asia
+```
+
+**标准 regions 和 zones 必须只在权威区创建一次**，再通过 TiCDC 同步到其他区域；绝对不要在多个区域分别创建同名 region/zone，否则每个区域会分配不同 UUID，导致数据结构分叉。
+
+**重新纳管时必须先清空所有区域的 `AXIS.managed_nodes`**，否则旧 UUID 通过唯一键约束会把新注册覆盖回旧身份。
 
 ## 可选 DNS 模块
 

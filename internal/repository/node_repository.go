@@ -18,5 +18,5 @@ type NodeRepository interface {
 	UpdateStatus(ctx context.Context, uuid string, status string) (bool, error)
 	ListRegions(ctx context.Context) ([]node.RegionSummary, error)
 	ListRegionZones(ctx context.Context) ([]node.RegionZoneSummary, error)
-	MarkTimedOutNodesDown(ctx context.Context, timeoutSec int) (int, error)
+	MarkTimedOutNodesDown(ctx context.Context, localRegion string, timeoutSec int) (int, error)
 }

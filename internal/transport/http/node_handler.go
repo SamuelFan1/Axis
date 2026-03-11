@@ -27,23 +27,23 @@ type updateNodeStatusRequest struct {
 }
 
 type reportNodeRequest struct {
-	UUID               string           `json:"uuid"`
-	Hostname           string           `json:"hostname"`
-	ManagementAddress  string           `json:"management_address"`
-	InternalIP         string           `json:"internal_ip"`
-	PublicIP           string           `json:"public_ip"`
-	Region             string           `json:"region"`
-	Zone               string           `json:"zone"`
-	Status             string           `json:"status"`
-	CPUCores           int              `json:"cpu_cores"`
-	CPUUsagePercent    float64          `json:"cpu_usage_percent"`
-	MemoryTotalGB      float64          `json:"memory_total_gb"`
-	MemoryUsedGB       float64          `json:"memory_used_gb"`
-	MemoryUsagePercent float64          `json:"memory_usage_percent"`
-	SwapTotalGB        float64          `json:"swap_total_gb"`
-	SwapUsedGB         float64          `json:"swap_used_gb"`
-	SwapUsagePercent   float64          `json:"swap_usage_percent"`
-	DiskUsagePercent   float64          `json:"disk_usage_percent"`
+	UUID               string            `json:"uuid"`
+	Hostname           string            `json:"hostname"`
+	ManagementAddress  string            `json:"management_address"`
+	InternalIP         string            `json:"internal_ip"`
+	PublicIP           string            `json:"public_ip"`
+	Region             string            `json:"region"`
+	Zone               string            `json:"zone"`
+	Status             string            `json:"status"`
+	CPUCores           int               `json:"cpu_cores"`
+	CPUUsagePercent    float64           `json:"cpu_usage_percent"`
+	MemoryTotalGB      float64           `json:"memory_total_gb"`
+	MemoryUsedGB       float64           `json:"memory_used_gb"`
+	MemoryUsagePercent float64           `json:"memory_usage_percent"`
+	SwapTotalGB        float64           `json:"swap_total_gb"`
+	SwapUsedGB         float64           `json:"swap_used_gb"`
+	SwapUsagePercent   float64           `json:"swap_usage_percent"`
+	DiskUsagePercent   float64           `json:"disk_usage_percent"`
 	DiskDetails        []node.DiskDetail `json:"disk_details"`
 }
 
@@ -118,23 +118,23 @@ func (h *NodeHandler) Report(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reported, err := h.nodeService.Report(r.Context(), node.Node{
-		UUID:                req.UUID,
-		Hostname:            req.Hostname,
-		ManagementAddress:   req.ManagementAddress,
-		InternalIP:          req.InternalIP,
-		PublicIP:            req.PublicIP,
-		Region:              req.Region,
-		Zone:                req.Zone,
-		Status:              req.Status,
-		CPUCores:            req.CPUCores,
-		CPUUsagePercent:     req.CPUUsagePercent,
-		MemoryTotalGB:       req.MemoryTotalGB,
-		MemoryUsedGB:        req.MemoryUsedGB,
-		MemoryUsagePercent:  req.MemoryUsagePercent,
-		SwapTotalGB:         req.SwapTotalGB,
-		SwapUsedGB:          req.SwapUsedGB,
-		SwapUsagePercent:    req.SwapUsagePercent,
-		DiskUsagePercent:    req.DiskUsagePercent,
+		UUID:               req.UUID,
+		Hostname:           req.Hostname,
+		ManagementAddress:  req.ManagementAddress,
+		InternalIP:         req.InternalIP,
+		PublicIP:           req.PublicIP,
+		Region:             req.Region,
+		Zone:               req.Zone,
+		Status:             req.Status,
+		CPUCores:           req.CPUCores,
+		CPUUsagePercent:    req.CPUUsagePercent,
+		MemoryTotalGB:      req.MemoryTotalGB,
+		MemoryUsedGB:       req.MemoryUsedGB,
+		MemoryUsagePercent: req.MemoryUsagePercent,
+		SwapTotalGB:        req.SwapTotalGB,
+		SwapUsedGB:         req.SwapUsedGB,
+		SwapUsagePercent:   req.SwapUsagePercent,
+		DiskUsagePercent:   req.DiskUsagePercent,
 		DiskDetails:        req.DiskDetails,
 	})
 	if err != nil {
@@ -151,6 +151,38 @@ func (h *NodeHandler) Report(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"message": "node reported",
 		"node":    reported,
+	})
+}
+
+func (h *NodeHandler) Assign(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	item, err := h.nodeService.AssignByRegionZone(
+		r.Context(),
+		r.URL.Query().Get("region"),
+		r.URL.Query().Get("zone"),
+	)
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		switch {
+		case err.Error() == "node not found":
+			statusCode = http.StatusNotFound
+		case isAssignValidationError(err):
+			statusCode = http.StatusBadRequest
+		}
+		writeJSON(w, statusCode, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"node": item,
 	})
 }
 
@@ -321,6 +353,28 @@ func extractNodeUUIDWithSuffix(path, prefix, suffix string) (string, bool) {
 	}
 	trimmed := strings.TrimSuffix(path, suffix)
 	return extractNodeUUID(trimmed, prefix)
+}
+
+func isAssignValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+	switch {
+	case message == "region is required":
+		return true
+	case message == "zone is required":
+		return true
+	case strings.HasPrefix(message, "region \"") && strings.HasSuffix(message, "\" is not configured"):
+		return true
+	case strings.HasPrefix(message, "region \"") && strings.HasSuffix(message, "\" has no configured zones"):
+		return true
+	case strings.HasPrefix(message, "zone \"") && strings.Contains(message, "\" is not allowed for region \""):
+		return true
+	default:
+		return false
+	}
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload interface{}) {

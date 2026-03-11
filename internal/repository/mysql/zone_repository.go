@@ -161,11 +161,7 @@ func (r *ZoneRepository) MigrateNodesZoneUUID(ctx context.Context) error {
 			return err
 		}
 		if z == nil {
-			created, err := r.Create(ctx, name)
-			if err != nil {
-				return err
-			}
-			z = &created
+			continue
 		}
 		_, err = r.db.ExecContext(ctx, `UPDATE managed_nodes SET zone_uuid = ? WHERE UPPER(TRIM(zone)) = ? AND (zone_uuid IS NULL OR zone_uuid = '')`, z.UUID, strings.ToUpper(strings.TrimSpace(name)))
 		if err != nil {

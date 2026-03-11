@@ -32,8 +32,8 @@ func main() {
 	if cfg.DNS.Enabled && cfg.DNS.Provider == "cloudflare" {
 		dnsProvider = platformdns.NewCloudflareProvider(cfg.DNS)
 	}
-	regionService := service.NewRegionService(regionRepo, nodeRepo)
-	zoneService := service.NewZoneService(zoneRepo, nodeRepo)
+	regionService := service.NewRegionService(regionRepo, nodeRepo, cfg.Region)
+	zoneService := service.NewZoneService(zoneRepo, nodeRepo, cfg.Region)
 	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, cfg.DNS, cfg.Region)
 	if err := regionRepo.EnsureSchema(context.Background()); err != nil {
 		log.Fatalf("ensure region schema: %v", err)

@@ -159,11 +159,7 @@ func (r *RegionRepository) MigrateNodesRegionUUID(ctx context.Context) error {
 			return err
 		}
 		if reg == nil {
-			created, err := r.Create(ctx, name)
-			if err != nil {
-				return err
-			}
-			reg = &created
+			continue
 		}
 		_, err = r.db.ExecContext(ctx, `UPDATE managed_nodes SET region_uuid = ? WHERE region = ? AND (region_uuid IS NULL OR region_uuid = '')`, reg.UUID, name)
 		if err != nil {

@@ -197,6 +197,7 @@ ON DUPLICATE KEY UPDATE
 		item.Region,
 		nullString(item.RegionUUID),
 		item.Zone,
+		nullString(item.ZoneUUID),
 		item.Status,
 		item.CPUUsagePercent,
 		item.MemoryUsagePercent,
@@ -429,19 +430,22 @@ ORDER BY region ASC, zone ASC`
 	return items, nil
 }
 
-func (r *NodeRepository) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int) (int, error) {
+func (r *NodeRepository) MarkTimedOutNodesDown(ctx context.Context, localRegion string, timeoutSec int) (int, error) {
 	if timeoutSec <= 0 {
 		timeoutSec = 30
 	}
-	result, err := r.db.ExecContext(
-		ctx,
-		`UPDATE managed_nodes
+	query := `UPDATE managed_nodes
 		 SET status = 'down',
 		     updated_at = CURRENT_TIMESTAMP(6)
 		 WHERE status <> 'down'
-		   AND COALESCE(last_reported_at, last_seen_at) < DATE_SUB(CURRENT_TIMESTAMP(6), INTERVAL ? SECOND)`,
-		timeoutSec,
-	)
+		   AND COALESCE(last_reported_at, last_seen_at) < DATE_SUB(CURRENT_TIMESTAMP(6), INTERVAL ? SECOND)`
+	args := []interface{}{timeoutSec}
+	localRegion = strings.TrimSpace(strings.ToLower(localRegion))
+	if localRegion != "" {
+		query += ` AND region = ?`
+		args = append(args, localRegion)
+	}
+	result, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("mark timed out nodes down: %w", err)
 	}

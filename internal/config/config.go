@@ -17,8 +17,9 @@ type Config struct {
 }
 
 type RegionConfig struct {
-	Regions    []string
+	Regions     []string
 	RegionZones map[string][]string
+	LocalRegion string
 }
 
 type CLIAuthConfig struct {
@@ -211,18 +212,34 @@ func loadEnvFile(path string) {
 }
 
 func loadRegionConfig() RegionConfig {
-	regions := getEnvSlice("AXIS_REGIONS", ",", "asia,europe,australia,north_america,south_america")
+	rawRegions := getEnvSlice("AXIS_REGIONS", ",", "asia,europe,australia,north_america,south_america")
+	regions := make([]string, 0, len(rawRegions))
 	regionZones := make(map[string][]string)
-	for _, r := range regions {
-		key := "AXIS_REGION_" + strings.ToUpper(strings.ReplaceAll(r, "-", "_")) + "_ZONES"
+	for _, regionName := range rawRegions {
+		normalizedRegion := strings.TrimSpace(strings.ToLower(regionName))
+		if normalizedRegion == "" {
+			continue
+		}
+		regions = append(regions, normalizedRegion)
+		key := "AXIS_REGION_" + strings.ToUpper(strings.ReplaceAll(normalizedRegion, "-", "_")) + "_ZONES"
 		zones := getEnvSlice(key, ",", "")
 		if len(zones) > 0 {
-			regionZones[r] = zones
+			normalizedZones := make([]string, 0, len(zones))
+			for _, zone := range zones {
+				normalizedZone := strings.TrimSpace(strings.ToUpper(zone))
+				if normalizedZone != "" {
+					normalizedZones = append(normalizedZones, normalizedZone)
+				}
+			}
+			if len(normalizedZones) > 0 {
+				regionZones[normalizedRegion] = normalizedZones
+			}
 		}
 	}
 	return RegionConfig{
 		Regions:     regions,
 		RegionZones: regionZones,
+		LocalRegion: strings.TrimSpace(strings.ToLower(getEnv("AXIS_LOCAL_REGION", ""))),
 	}
 }
 
@@ -254,9 +271,12 @@ func (c *RegionConfig) ValidateRegionZone(region, zone string) error {
 	if zone == "" {
 		return fmt.Errorf("zone is required")
 	}
+	if !c.HasRegion(region) {
+		return fmt.Errorf("region %q is not configured", region)
+	}
 	allowedZones, configured := c.RegionZones[region]
-	if !configured {
-		return nil
+	if !configured || len(allowedZones) == 0 {
+		return fmt.Errorf("region %q has no configured zones", region)
 	}
 	for _, z := range allowedZones {
 		if strings.TrimSpace(strings.ToUpper(z)) == zone {
@@ -264,6 +284,61 @@ func (c *RegionConfig) ValidateRegionZone(region, zone string) error {
 		}
 	}
 	return fmt.Errorf("zone %q is not allowed for region %q", zone, region)
+}
+
+func (c *RegionConfig) HasRegion(region string) bool {
+	region = strings.TrimSpace(strings.ToLower(region))
+	for _, configured := range c.Regions {
+		if strings.TrimSpace(strings.ToLower(configured)) == region {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *RegionConfig) ValidateRegion(region string) error {
+	region = strings.TrimSpace(strings.ToLower(region))
+	if region == "" {
+		return fmt.Errorf("region is required")
+	}
+	if !c.HasRegion(region) {
+		return fmt.Errorf("region %q is not configured", region)
+	}
+	return nil
+}
+
+func (c *RegionConfig) ValidateZone(zone string) error {
+	zone = strings.TrimSpace(strings.ToUpper(zone))
+	if zone == "" {
+		return fmt.Errorf("zone is required")
+	}
+	for _, allowedZones := range c.RegionZones {
+		for _, configuredZone := range allowedZones {
+			if strings.TrimSpace(strings.ToUpper(configuredZone)) == zone {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("zone %q is not configured", zone)
+}
+
+func (c *RegionConfig) AllZones() []string {
+	seen := make(map[string]struct{})
+	var zones []string
+	for _, allowedZones := range c.RegionZones {
+		for _, zone := range allowedZones {
+			normalizedZone := strings.TrimSpace(strings.ToUpper(zone))
+			if normalizedZone == "" {
+				continue
+			}
+			if _, ok := seen[normalizedZone]; ok {
+				continue
+			}
+			seen[normalizedZone] = struct{}{}
+			zones = append(zones, normalizedZone)
+		}
+	}
+	return zones
 }
 
 func getEnv(key, defaultValue string) string {
