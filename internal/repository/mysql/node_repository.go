@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
     swap_usage_percent DOUBLE NOT NULL DEFAULT 0,
     disk_usage_percent DOUBLE NOT NULL DEFAULT 0,
     disk_details JSON NULL,
+    monitoring_snapshot JSON NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     last_seen_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_used_gb DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_usage_percent DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS disk_details JSON NULL`,
+		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS monitoring_snapshot JSON NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone VARCHAR(16) NOT NULL DEFAULT ''`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS region_uuid VARCHAR(36) NULL DEFAULT NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone_uuid VARCHAR(36) NULL DEFAULT NULL`,
@@ -125,6 +127,7 @@ const selectNodeColumns = `
     swap_usage_percent,
     disk_usage_percent,
     disk_details,
+    monitoring_snapshot,
     created_at,
     updated_at,
     last_seen_at,
@@ -211,6 +214,7 @@ ON DUPLICATE KEY UPDATE
 
 func (r *NodeRepository) UpdateHeartbeat(ctx context.Context, item node.Node) error {
 	diskDetailsJSON := marshalDiskDetails(item.DiskDetails)
+	monitoringSnapshotJSON := marshalRawJSON(item.MonitoringSnapshot)
 	const query = `
 UPDATE managed_nodes
 SET
@@ -233,6 +237,7 @@ SET
     swap_usage_percent = ?,
     disk_usage_percent = ?,
     disk_details = ?,
+    monitoring_snapshot = ?,
     updated_at = CURRENT_TIMESTAMP(6),
     last_seen_at = CURRENT_TIMESTAMP(6),
     last_reported_at = CURRENT_TIMESTAMP(6)
@@ -260,6 +265,7 @@ WHERE uuid = ?`
 		item.SwapUsagePercent,
 		item.DiskUsagePercent,
 		diskDetailsJSON,
+		monitoringSnapshotJSON,
 		item.UUID,
 	)
 	if err != nil {
@@ -482,6 +488,7 @@ func scanNode(src scanner, item *node.Node) error {
 	var regionUUID sql.NullString
 	var zoneUUID sql.NullString
 	var diskDetailsRaw []byte
+	var monitoringSnapshotRaw []byte
 	if err := src.Scan(
 		&item.UUID,
 		&item.Hostname,
@@ -505,6 +512,7 @@ func scanNode(src scanner, item *node.Node) error {
 		&item.SwapUsagePercent,
 		&item.DiskUsagePercent,
 		&diskDetailsRaw,
+		&monitoringSnapshotRaw,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 		&item.LastSeenAt,
@@ -530,6 +538,9 @@ func scanNode(src scanner, item *node.Node) error {
 	if len(diskDetailsRaw) > 0 {
 		_ = json.Unmarshal(diskDetailsRaw, &item.DiskDetails)
 	}
+	if len(monitoringSnapshotRaw) > 0 {
+		item.MonitoringSnapshot = append(item.MonitoringSnapshot[:0], monitoringSnapshotRaw...)
+	}
 	return nil
 }
 
@@ -542,6 +553,13 @@ func marshalDiskDetails(details []node.DiskDetail) interface{} {
 		return nil
 	}
 	return b
+}
+
+func marshalRawJSON(raw json.RawMessage) interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	return []byte(raw)
 }
 
 func (r *NodeRepository) ensureDNSBindingOnce(ctx context.Context, uuid, prefix, zone string) (*node.Node, error) {

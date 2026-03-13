@@ -1,6 +1,9 @@
 package node
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	StatusUp   = "up"
@@ -38,6 +41,7 @@ type Node struct {
 	SwapUsagePercent   float64      `json:"swap_usage_percent"`
 	DiskUsagePercent   float64      `json:"disk_usage_percent"`
 	DiskDetails        []DiskDetail `json:"disk_details"`
+	MonitoringSnapshot json.RawMessage `json:"monitoring_snapshot,omitempty"`
 	CreatedAt          time.Time    `json:"created_at"`
 	UpdatedAt          time.Time    `json:"updated_at"`
 	LastSeenAt         time.Time    `json:"last_seen_at"`

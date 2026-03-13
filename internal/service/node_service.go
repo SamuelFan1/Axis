@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"strings"
@@ -335,6 +336,14 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 		return node.Node{}, err
 	}
 	return *updated, nil
+}
+
+func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue string) (json.RawMessage, error) {
+	item, err := s.GetByUUID(ctx, uuidValue)
+	if err != nil {
+		return nil, err
+	}
+	return item.MonitoringSnapshot, nil
 }
 
 func weightedScore(item node.Node) float64 {

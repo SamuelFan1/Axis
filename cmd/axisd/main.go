@@ -7,6 +7,7 @@ import (
 	"github.com/SamuelFan1/Axis/internal/bootstrap"
 	"github.com/SamuelFan1/Axis/internal/config"
 	platformdns "github.com/SamuelFan1/Axis/internal/platform/dns"
+	platformrouting "github.com/SamuelFan1/Axis/internal/platform/routingpublish"
 	"github.com/SamuelFan1/Axis/internal/repository/mysql"
 	"github.com/SamuelFan1/Axis/internal/service"
 	httptransport "github.com/SamuelFan1/Axis/internal/transport/http"
@@ -51,6 +52,51 @@ func main() {
 		log.Fatalf("migrate zone_uuid: %v", err)
 	}
 
+	var routingHandler *httptransport.RoutingHandler
+	if cfg.Routing.Enabled {
+		observationRepo := mysql.NewObservationRepository(db)
+		snapshotRepo := mysql.NewRoutingSnapshotRepository(db)
+
+		if cfg.Routing.ObservationEnabled || cfg.Routing.SnapshotEnabled {
+			if err := observationRepo.EnsureSchema(context.Background()); err != nil {
+				log.Fatalf("ensure routing observation schema: %v", err)
+			}
+		}
+		if cfg.Routing.SnapshotEnabled {
+			if err := snapshotRepo.EnsureSchema(context.Background()); err != nil {
+				log.Fatalf("ensure routing snapshot schema: %v", err)
+			}
+		}
+
+		var observationService *service.RoutingObservationService
+		if cfg.Routing.ObservationEnabled {
+			observationService = service.NewRoutingObservationService(observationRepo)
+		}
+
+		var snapshotService *service.RoutingSnapshotService
+		if cfg.Routing.SnapshotEnabled {
+			snapshotService = service.NewRoutingSnapshotService(observationRepo, snapshotRepo, nodeRepo, cfg.Routing)
+		}
+
+		publisher := platformrouting.NewNoopPublisher()
+		if cfg.Routing.PublisherEnabled {
+			publisher = platformrouting.NewCloudflareKVPublisher(cfg.Routing)
+		}
+		publishService := service.NewRoutingPublishService(publisher)
+
+		if observationService != nil || snapshotService != nil {
+			routingHandler = httptransport.NewRoutingHandler(observationService, snapshotService, publishService)
+		}
+		if snapshotService != nil && publishService.Enabled() {
+			routingPublisher := worker.NewRoutingSnapshotPublisher(
+				snapshotService,
+				publishService,
+				cfg.Routing.PublishIntervalSec,
+			)
+			go routingPublisher.Run()
+		}
+	}
+
 	nodeMonitor := worker.NewNodeMonitor(
 		nodeService,
 		cfg.App.NodeTimeoutSec,
@@ -58,7 +104,7 @@ func main() {
 	)
 	go nodeMonitor.Run()
 
-	server := httptransport.NewServer(cfg.App.HTTPAddress, cfg.Auth, nodeService, regionService, zoneService)
+	server := httptransport.NewServer(cfg.App.HTTPAddress, cfg.Auth, nodeService, regionService, zoneService, routingHandler)
 	if err := server.Run(); err != nil {
 		log.Fatalf("run http server: %v", err)
 	}

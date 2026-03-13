@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	App    AppConfig
-	Auth   AuthConfig
-	DB     DBConfig
-	DNS    DNSConfig
-	Region RegionConfig
+	App     AppConfig
+	Auth    AuthConfig
+	DB      DBConfig
+	DNS     DNSConfig
+	Routing RoutingConfig
+	Region  RegionConfig
 }
 
 type RegionConfig struct {
@@ -63,6 +64,19 @@ type DNSConfig struct {
 	CloudflareAPIToken string
 }
 
+type RoutingConfig struct {
+	Enabled                 bool
+	ObservationEnabled      bool
+	SnapshotEnabled         bool
+	PublisherEnabled        bool
+	PublishIntervalSec      int
+	SnapshotTTLSeconds      int
+	TopN                    int
+	CloudflareAccountID     string
+	CloudflareAPIToken      string
+	CloudflareKVNamespaceID string
+}
+
 func Load() (*Config, error) {
 	loadEnvFile(getEnv("AXIS_ENV_FILE", ".env"))
 
@@ -96,6 +110,18 @@ func Load() (*Config, error) {
 			TTL:                getEnvInt("AXIS_DNS_TTL", 1),
 			Proxied:            getEnvBool("AXIS_DNS_PROXIED", false),
 			CloudflareAPIToken: getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
+		},
+		Routing: RoutingConfig{
+			Enabled:                 getEnvBool("AXIS_ROUTING_ENABLED", false),
+			ObservationEnabled:      getEnvBool("AXIS_ROUTING_OBSERVATION_ENABLED", false),
+			SnapshotEnabled:         getEnvBool("AXIS_ROUTING_SNAPSHOT_ENABLED", false),
+			PublisherEnabled:        getEnvBool("AXIS_ROUTING_PUBLISHER_ENABLED", false),
+			PublishIntervalSec:      getEnvInt("AXIS_ROUTING_PUBLISH_INTERVAL_SEC", 60),
+			SnapshotTTLSeconds:      getEnvInt("AXIS_ROUTING_SNAPSHOT_TTL_SEC", 90),
+			TopN:                    getEnvInt("AXIS_ROUTING_TOPN", 3),
+			CloudflareAccountID:     strings.TrimSpace(getEnv("AXIS_ROUTING_CF_ACCOUNT_ID", "")),
+			CloudflareAPIToken:      getEnv("AXIS_ROUTING_CF_API_TOKEN", ""),
+			CloudflareKVNamespaceID: strings.TrimSpace(getEnv("AXIS_ROUTING_CF_KV_NAMESPACE_ID", "")),
 		},
 		Region: loadRegionConfig(),
 	}
@@ -151,6 +177,38 @@ func Load() (*Config, error) {
 		}
 		if strings.TrimSpace(cfg.DNS.CloudflareAPIToken) == "" {
 			return nil, fmt.Errorf("AXIS_DNS_CLOUDFLARE_API_TOKEN must be set when AXIS_DNS_ENABLED is true")
+		}
+	}
+
+	if cfg.Routing.PublishIntervalSec <= 0 {
+		cfg.Routing.PublishIntervalSec = 60
+	}
+	if cfg.Routing.SnapshotTTLSeconds <= 0 {
+		cfg.Routing.SnapshotTTLSeconds = 90
+	}
+	if cfg.Routing.TopN <= 0 {
+		cfg.Routing.TopN = 3
+	}
+
+	if !cfg.Routing.Enabled {
+		if cfg.Routing.ObservationEnabled || cfg.Routing.SnapshotEnabled || cfg.Routing.PublisherEnabled {
+			return nil, fmt.Errorf("AXIS_ROUTING_ENABLED must be true when routing subfeatures are enabled")
+		}
+		return cfg, nil
+	}
+
+	if cfg.Routing.PublisherEnabled && !cfg.Routing.SnapshotEnabled {
+		return nil, fmt.Errorf("AXIS_ROUTING_SNAPSHOT_ENABLED must be true when AXIS_ROUTING_PUBLISHER_ENABLED is true")
+	}
+	if cfg.Routing.PublisherEnabled {
+		if cfg.Routing.CloudflareAccountID == "" {
+			return nil, fmt.Errorf("AXIS_ROUTING_CF_ACCOUNT_ID must be set when AXIS_ROUTING_PUBLISHER_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.Routing.CloudflareAPIToken) == "" {
+			return nil, fmt.Errorf("AXIS_ROUTING_CF_API_TOKEN must be set when AXIS_ROUTING_PUBLISHER_ENABLED is true")
+		}
+		if cfg.Routing.CloudflareKVNamespaceID == "" {
+			return nil, fmt.Errorf("AXIS_ROUTING_CF_KV_NAMESPACE_ID must be set when AXIS_ROUTING_PUBLISHER_ENABLED is true")
 		}
 	}
 

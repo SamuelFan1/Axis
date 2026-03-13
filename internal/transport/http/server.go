@@ -10,20 +10,22 @@ import (
 )
 
 type Server struct {
-	address       string
-	authConfig    config.AuthConfig
-	nodeHandler   *NodeHandler
-	regionHandler *RegionHandler
-	zoneHandler   *ZoneHandler
+	address        string
+	authConfig     config.AuthConfig
+	nodeHandler    *NodeHandler
+	regionHandler  *RegionHandler
+	zoneHandler    *ZoneHandler
+	routingHandler *RoutingHandler
 }
 
-func NewServer(address string, authConfig config.AuthConfig, nodeService *service.NodeService, regionService *service.RegionService, zoneService *service.ZoneService) *Server {
+func NewServer(address string, authConfig config.AuthConfig, nodeService *service.NodeService, regionService *service.RegionService, zoneService *service.ZoneService, routingHandler *RoutingHandler) *Server {
 	return &Server{
-		address:       address,
-		authConfig:    authConfig,
-		nodeHandler:   NewNodeHandler(nodeService),
-		regionHandler: NewRegionHandler(regionService),
-		zoneHandler:   NewZoneHandler(zoneService),
+		address:        address,
+		authConfig:     authConfig,
+		nodeHandler:    NewNodeHandler(nodeService),
+		regionHandler:  NewRegionHandler(regionService),
+		zoneHandler:    NewZoneHandler(zoneService),
+		routingHandler: routingHandler,
 	}
 }
 
@@ -42,6 +44,12 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/v1/zones", adminAuthMiddleware(s.authConfig, s.routeZones))
 	mux.HandleFunc("/api/v1/zones/", adminAuthMiddleware(s.authConfig, s.routeZoneByUUID))
 	mux.HandleFunc("/api/v1/nodes/", adminAuthMiddleware(s.authConfig, s.routeNodeByUUID))
+	if s.routingHandler != nil {
+		mux.HandleFunc("/api/v1/routing/observations", adminAuthMiddleware(s.authConfig, s.routingHandler.RecordObservations))
+		mux.HandleFunc("/api/v1/routing/snapshots/latest", adminAuthMiddleware(s.authConfig, s.routingHandler.LatestSnapshot))
+		mux.HandleFunc("/api/v1/routing/snapshots/generate", adminAuthMiddleware(s.authConfig, s.routingHandler.GenerateSnapshot))
+		mux.HandleFunc("/api/v1/routing/snapshots/", adminAuthMiddleware(s.authConfig, s.routingHandler.SnapshotByVersion))
+	}
 
 	log.Printf("axisd listening on %s", s.address)
 	return http.ListenAndServe(s.address, mux)
@@ -50,6 +58,10 @@ func (s *Server) Run() error {
 func (s *Server) routeNodeByUUID(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet:
+		if hasMonitoringSuffix(r.URL.Path) {
+			s.nodeHandler.Monitoring(w, r)
+			return
+		}
 		s.nodeHandler.Detail(w, r)
 	case r.Method == http.MethodDelete:
 		s.nodeHandler.Delete(w, r)
@@ -123,4 +135,8 @@ func extractUUID(path, prefix string) (string, bool) {
 
 func hasStatusSuffix(path string) bool {
 	return len(path) > len("/status") && path[len(path)-len("/status"):] == "/status"
+}
+
+func hasMonitoringSuffix(path string) bool {
+	return len(path) > len("/monitoring") && path[len(path)-len("/monitoring"):] == "/monitoring"
 }

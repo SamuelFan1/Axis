@@ -45,6 +45,7 @@ type reportNodeRequest struct {
 	SwapUsagePercent   float64           `json:"swap_usage_percent"`
 	DiskUsagePercent   float64           `json:"disk_usage_percent"`
 	DiskDetails        []node.DiskDetail `json:"disk_details"`
+	MonitoringSnapshot json.RawMessage   `json:"monitoring_snapshot,omitempty"`
 }
 
 func NewNodeHandler(nodeService *service.NodeService) *NodeHandler {
@@ -136,6 +137,7 @@ func (h *NodeHandler) Report(w http.ResponseWriter, r *http.Request) {
 		SwapUsagePercent:   req.SwapUsagePercent,
 		DiskUsagePercent:   req.DiskUsagePercent,
 		DiskDetails:        req.DiskDetails,
+		MonitoringSnapshot: req.MonitoringSnapshot,
 	})
 	if err != nil {
 		statusCode := http.StatusBadRequest
@@ -183,6 +185,40 @@ func (h *NodeHandler) Assign(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"node": item,
+	})
+}
+
+func (h *NodeHandler) Monitoring(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	uuidValue, ok := extractNodeUUIDWithSuffix(r.URL.Path, "/api/v1/nodes/", "/monitoring")
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid node uuid path",
+		})
+		return
+	}
+
+	snapshot, err := h.nodeService.GetMonitoringSnapshot(r.Context(), uuidValue)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if err.Error() == "node not found" {
+			statusCode = http.StatusNotFound
+		}
+		writeJSON(w, statusCode, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"uuid":               uuidValue,
+		"monitoring_snapshot": snapshot,
 	})
 }
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -35,6 +37,13 @@ func main() {
 		}
 		if err := runServiceShow(os.Args[2]); err != nil {
 			log.Fatalf("service-show: %v", err)
+		}
+	case "service-workloads":
+		if len(os.Args) < 3 {
+			log.Fatalf("service-workloads: uuid is required")
+		}
+		if err := runServiceWorkloads(os.Args[2]); err != nil {
+			log.Fatalf("service-workloads: %v", err)
 		}
 	case "service-delete":
 		if len(os.Args) < 3 {
@@ -220,6 +229,91 @@ func runServiceShow(uuidValue string) error {
 	return nil
 }
 
+type monitoringSnapshotView struct {
+	SchemaVersion string                 `json:"schema_version"`
+	CollectedAt   time.Time              `json:"collected_at"`
+	Sources       []monitoringSourceView `json:"sources"`
+}
+
+type monitoringSourceView struct {
+	Name        string                 `json:"name"`
+	Kind        string                 `json:"kind"`
+	Status      string                 `json:"status"`
+	CollectedAt time.Time              `json:"collected_at"`
+	Summary     map[string]interface{} `json:"summary"`
+	Payload     json.RawMessage        `json:"payload"`
+	Error       string                 `json:"error"`
+}
+
+func runServiceWorkloads(uuidValue string) error {
+	client, err := loadAPIClient()
+	if err != nil {
+		return err
+	}
+
+	rawSnapshot, err := client.GetNodeMonitoring(uuidValue)
+	if err != nil {
+		return err
+	}
+	if len(rawSnapshot) == 0 || string(rawSnapshot) == "null" {
+		printRecord("SERVICE_WORKLOADS_RESULT", [][2]string{
+			{"UUID", uuidValue},
+			{"RESULT", "no monitoring snapshot"},
+		})
+		return nil
+	}
+
+	var snapshot monitoringSnapshotView
+	if err := json.Unmarshal(rawSnapshot, &snapshot); err != nil {
+		return fmt.Errorf("decode monitoring snapshot: %w", err)
+	}
+
+	printRecord("SERVICE_WORKLOADS_RESULT", [][2]string{
+		{"UUID", uuidValue},
+		{"SCHEMA_VERSION", snapshot.SchemaVersion},
+		{"COLLECTED_AT", formatTime(snapshot.CollectedAt)},
+		{"SOURCE_COUNT", fmt.Sprintf("%d", len(snapshot.Sources))},
+	})
+
+	rows := make([][]string, 0, len(snapshot.Sources))
+	for _, source := range snapshot.Sources {
+		rows = append(rows, []string{
+			source.Name,
+			source.Kind,
+			source.Status,
+			formatTime(source.CollectedAt),
+		})
+	}
+	printTable("MONITORING_SOURCES", []string{"NAME", "KIND", "STATUS", "COLLECTED_AT"}, rows)
+
+	for _, source := range snapshot.Sources {
+		if len(source.Summary) > 0 {
+			summaryFields := make([][2]string, 0, len(source.Summary)+4)
+			summaryFields = append(summaryFields,
+				[2]string{"NAME", source.Name},
+				[2]string{"KIND", source.Kind},
+				[2]string{"STATUS", source.Status},
+				[2]string{"COLLECTED_AT", formatTime(source.CollectedAt)},
+			)
+			for key, value := range source.Summary {
+				summaryFields = append(summaryFields, [2]string{strings.ToUpper(key), fmt.Sprintf("%v", value)})
+			}
+			printRecord(strings.ToUpper(strings.ReplaceAll(source.Name, "-", "_"))+"_SUMMARY", summaryFields)
+		}
+		if source.Error != "" {
+			printRecord(strings.ToUpper(strings.ReplaceAll(source.Name, "-", "_"))+"_ERROR", [][2]string{
+				{"NAME", source.Name},
+				{"ERROR", source.Error},
+			})
+		}
+		if len(source.Payload) > 0 && string(source.Payload) != "null" {
+			fmt.Printf("%s_PAYLOAD\n%s\n", strings.ToUpper(strings.ReplaceAll(source.Name, "-", "_")), prettyJSON(source.Payload))
+		}
+	}
+
+	return nil
+}
+
 func runServiceDelete(uuidValue string) error {
 	client, err := loadAPIClient()
 	if err != nil {
@@ -395,6 +489,7 @@ func printUsage() {
 	fmt.Println("  axis service-register --hostname <name> --management-address <addr> --region <region> --zone <zone> [--status up] [--uuid <uuid>]")
 	fmt.Println("  axis service-list")
 	fmt.Println("  axis service-show <uuid>")
+	fmt.Println("  axis service-workloads <uuid>")
 	fmt.Println("  axis service-delete <uuid>")
 	fmt.Println("  axis service-up <uuid>")
 	fmt.Println("  axis service-down <uuid>")
@@ -505,6 +600,17 @@ func formatTime(value time.Time) string {
 		return "-"
 	}
 	return value.Format("2006-01-02 15:04:05")
+}
+
+func prettyJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "{}"
+	}
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, raw, "", "  "); err != nil {
+		return string(raw)
+	}
+	return indented.String()
 }
 
 func extractInternalIP(managementAddress string) string {

@@ -56,6 +56,12 @@ type getNodeResponse struct {
 	Error string    `json:"error"`
 }
 
+type getNodeMonitoringResponse struct {
+	UUID               string          `json:"uuid"`
+	MonitoringSnapshot json.RawMessage `json:"monitoring_snapshot"`
+	Error              string          `json:"error"`
+}
+
 type updateStatusRequest struct {
 	Status string `json:"status"`
 }
@@ -130,6 +136,14 @@ func (c *Client) GetNode(uuid string) (node.Node, error) {
 		return node.Node{}, err
 	}
 	return resp.Node, nil
+}
+
+func (c *Client) GetNodeMonitoring(uuid string) (json.RawMessage, error) {
+	var resp getNodeMonitoringResponse
+	if err := c.doJSON(nethttp.MethodGet, "/api/v1/nodes/"+uuid+"/monitoring", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.MonitoringSnapshot, nil
 }
 
 func (c *Client) DeleteNode(uuid string) error {
