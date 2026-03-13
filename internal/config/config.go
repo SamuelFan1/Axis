@@ -34,6 +34,7 @@ type AppConfig struct {
 	HTTPAddress            string
 	NodeTimeoutSec         int
 	NodeMonitorIntervalSec int
+	AutoSchemaUpgrade      bool
 }
 
 type AuthConfig struct {
@@ -61,6 +62,7 @@ type DNSConfig struct {
 	RecordType         string
 	TTL                int
 	Proxied            bool
+	StateDir           string
 	CloudflareAPIToken string
 }
 
@@ -85,6 +87,7 @@ func Load() (*Config, error) {
 			HTTPAddress:            getEnv("AXIS_HTTP_ADDRESS", ":9090"),
 			NodeTimeoutSec:         getEnvInt("AXIS_NODE_TIMEOUT_SEC", 30),
 			NodeMonitorIntervalSec: getEnvInt("AXIS_NODE_MONITOR_INTERVAL_SEC", 5),
+			AutoSchemaUpgrade:      getEnvBool("AXIS_AUTO_SCHEMA_UPGRADE", false),
 		},
 		Auth: AuthConfig{
 			AdminUsername:   getEnv("AXIS_ADMIN_USERNAME", ""),
@@ -109,6 +112,7 @@ func Load() (*Config, error) {
 			RecordType:         strings.ToUpper(getEnv("AXIS_DNS_RECORD_TYPE", "A")),
 			TTL:                getEnvInt("AXIS_DNS_TTL", 1),
 			Proxied:            getEnvBool("AXIS_DNS_PROXIED", false),
+			StateDir:           strings.TrimSpace(getEnv("AXIS_DNS_STATE_DIR", "/data/axis/dns-state")),
 			CloudflareAPIToken: getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
 		},
 		Routing: RoutingConfig{
@@ -174,6 +178,12 @@ func Load() (*Config, error) {
 		}
 		if cfg.DNS.RecordType != "A" {
 			return nil, fmt.Errorf("AXIS_DNS_RECORD_TYPE must be A")
+		}
+		if strings.TrimSpace(cfg.DNS.StateDir) == "" {
+			return nil, fmt.Errorf("AXIS_DNS_STATE_DIR must be set when AXIS_DNS_ENABLED is true")
+		}
+		if cfg.DNS.Proxied {
+			return nil, fmt.Errorf("AXIS_DNS_PROXIED must be false when AXIS_DNS_ENABLED is true")
 		}
 		if strings.TrimSpace(cfg.DNS.CloudflareAPIToken) == "" {
 			return nil, fmt.Errorf("AXIS_DNS_CLOUDFLARE_API_TOKEN must be set when AXIS_DNS_ENABLED is true")

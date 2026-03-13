@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"strings"
+	"time"
 
 	"github.com/SamuelFan1/Axis/internal/config"
 	"github.com/SamuelFan1/Axis/internal/domain/node"
@@ -20,16 +21,20 @@ type NodeService struct {
 	regionRepo   repository.RegionRepository
 	zoneRepo     repository.ZoneRepository
 	dnsProvider  platformdns.Provider
+	bindingStore platformdns.BindingStore
+	resolver     platformdns.Resolver
 	dnsConfig    config.DNSConfig
 	regionConfig config.RegionConfig
 }
 
-func NewNodeService(repo repository.NodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsConfig config.DNSConfig, regionConfig config.RegionConfig) *NodeService {
+func NewNodeService(repo repository.NodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, bindingStore platformdns.BindingStore, resolver platformdns.Resolver, dnsConfig config.DNSConfig, regionConfig config.RegionConfig) *NodeService {
 	return &NodeService{
 		repo:         repo,
 		regionRepo:   regionRepo,
 		zoneRepo:     zoneRepo,
 		dnsProvider:  dnsProvider,
+		bindingStore: bindingStore,
+		resolver:     resolver,
 		dnsConfig:    dnsConfig,
 		regionConfig: regionConfig,
 	}
@@ -37,6 +42,38 @@ func NewNodeService(repo repository.NodeRepository, regionRepo repository.Region
 
 func (s *NodeService) EnsureSchema(ctx context.Context) error {
 	return s.repo.EnsureSchema(ctx)
+}
+
+func (s *NodeService) SyncDNSBindingsFromLocal(ctx context.Context) error {
+	if !s.dnsConfig.Enabled || s.bindingStore == nil {
+		return nil
+	}
+
+	bindings, err := s.bindingStore.List()
+	if err != nil {
+		return fmt.Errorf("list local dns bindings: %w", err)
+	}
+
+	for _, binding := range bindings {
+		item, err := s.repo.FindByUUID(ctx, binding.NodeUUID)
+		if err != nil {
+			return fmt.Errorf("find node for local dns binding %s: %w", binding.NodeUUID, err)
+		}
+		if item == nil {
+			continue
+		}
+		if strings.TrimSpace(item.DNSLabel) == binding.DNSLabel && strings.TrimSpace(item.DNSName) == binding.DNSName {
+			continue
+		}
+		if err := s.repo.SaveDNSBinding(ctx, binding.NodeUUID, binding.DNSLabel, binding.DNSName); err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return fmt.Errorf("sync local dns binding %s: %w", binding.NodeUUID, err)
+		}
+	}
+
+	return nil
 }
 
 func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, error) {
@@ -317,25 +354,38 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	if updated.PublicIP == "" {
 		return *updated, nil
 	}
-	if updated.DNSName == "" {
-		updated, err = s.repo.EnsureDNSBinding(ctx, item.UUID, s.dnsConfig.RecordPrefix, s.dnsConfig.Zone)
-		if err != nil {
-			return node.Node{}, err
-		}
-		if updated == nil {
-			return node.Node{}, fmt.Errorf("node not found")
-		}
+
+	currentBinding, err := s.bindingStore.Load(updated.UUID)
+	if err != nil {
+		return node.Node{}, fmt.Errorf("load local dns binding: %w", err)
 	}
-	if err := s.dnsProvider.EnsureRecord(ctx, platformdns.Record{
-		Name:    updated.DNSName,
-		Type:    s.dnsConfig.RecordType,
-		Content: updated.PublicIP,
-		TTL:     s.dnsConfig.TTL,
-		Proxied: s.dnsConfig.Proxied,
-	}); err != nil {
-		return node.Node{}, err
+
+	if currentBinding == nil {
+		return s.assignNewDNSBinding(ctx, updated)
 	}
-	return *updated, nil
+
+	resolvedIPs, err := s.resolver.LookupA(ctx, currentBinding.DNSName)
+	if err != nil {
+		return node.Node{}, fmt.Errorf("lookup dns binding %s: %w", currentBinding.DNSName, err)
+	}
+
+	currentBinding.LastPublicIP = updated.PublicIP
+	currentBinding.UpdatedAt = time.Now().UTC()
+	if containsString(resolvedIPs, updated.PublicIP) {
+		if err := s.bindingStore.Save(*currentBinding); err != nil {
+			return node.Node{}, fmt.Errorf("save local dns binding: %w", err)
+		}
+		if strings.TrimSpace(updated.DNSLabel) != currentBinding.DNSLabel || strings.TrimSpace(updated.DNSName) != currentBinding.DNSName {
+			if err := s.saveDNSBinding(ctx, updated.UUID, currentBinding.DNSLabel, currentBinding.DNSName); err != nil {
+				return node.Node{}, err
+			}
+			updated.DNSLabel = currentBinding.DNSLabel
+			updated.DNSName = currentBinding.DNSName
+		}
+		return *updated, nil
+	}
+
+	return s.assignNewDNSBinding(ctx, updated)
 }
 
 func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue string) (json.RawMessage, error) {
@@ -344,6 +394,70 @@ func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue strin
 		return nil, err
 	}
 	return item.MonitoringSnapshot, nil
+}
+
+func (s *NodeService) assignNewDNSBinding(ctx context.Context, item *node.Node) (node.Node, error) {
+	binding, err := s.nextDNSBinding(item.UUID, item.PublicIP)
+	if err != nil {
+		return node.Node{}, err
+	}
+
+	if err := s.dnsProvider.EnsureRecord(ctx, platformdns.Record{
+		Name:    binding.DNSName,
+		Type:    s.dnsConfig.RecordType,
+		Content: item.PublicIP,
+		TTL:     s.dnsConfig.TTL,
+		Proxied: s.dnsConfig.Proxied,
+	}); err != nil {
+		return node.Node{}, err
+	}
+
+	if err := s.bindingStore.Save(binding); err != nil {
+		return node.Node{}, fmt.Errorf("save local dns binding: %w", err)
+	}
+	if err := s.saveDNSBinding(ctx, item.UUID, binding.DNSLabel, binding.DNSName); err != nil {
+		return node.Node{}, err
+	}
+
+	item.DNSLabel = binding.DNSLabel
+	item.DNSName = binding.DNSName
+	return *item, nil
+}
+
+func (s *NodeService) nextDNSBinding(nodeUUID string, publicIP string) (platformdns.Binding, error) {
+	sequence, err := s.bindingStore.ReserveNextSequence(s.dnsConfig.RecordPrefix)
+	if err != nil {
+		return platformdns.Binding{}, fmt.Errorf("reserve dns sequence: %w", err)
+	}
+
+	label := platformdns.BuildDNSLabel(s.dnsConfig.RecordPrefix, sequence)
+	return platformdns.Binding{
+		NodeUUID:     strings.TrimSpace(nodeUUID),
+		DNSLabel:     label,
+		DNSName:      platformdns.BuildDNSName(label, s.dnsConfig.Zone),
+		LastPublicIP: strings.TrimSpace(publicIP),
+		UpdatedAt:    time.Now().UTC(),
+	}, nil
+}
+
+func (s *NodeService) saveDNSBinding(ctx context.Context, uuid string, label string, name string) error {
+	if err := s.repo.SaveDNSBinding(ctx, uuid, label, name); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("node not found")
+		}
+		return fmt.Errorf("save dns binding: %w", err)
+	}
+	return nil
+}
+
+func containsString(items []string, expected string) bool {
+	expected = strings.TrimSpace(expected)
+	for _, item := range items {
+		if strings.TrimSpace(item) == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func weightedScore(item node.Node) float64 {

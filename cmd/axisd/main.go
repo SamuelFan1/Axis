@@ -29,21 +29,30 @@ func main() {
 	nodeRepo := mysql.NewNodeRepository(db)
 	regionRepo := mysql.NewRegionRepository(db)
 	zoneRepo := mysql.NewZoneRepository(db)
+
 	dnsProvider := platformdns.NewNoopProvider()
+	var bindingStore platformdns.BindingStore
+	var resolver platformdns.Resolver
 	if cfg.DNS.Enabled && cfg.DNS.Provider == "cloudflare" {
 		dnsProvider = platformdns.NewCloudflareProvider(cfg.DNS)
+		bindingStore = platformdns.NewFileBindingStore(cfg.DNS.StateDir)
+		resolver = platformdns.NewNetResolver()
 	}
 	regionService := service.NewRegionService(regionRepo, nodeRepo, cfg.Region)
 	zoneService := service.NewZoneService(zoneRepo, nodeRepo, cfg.Region)
-	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, cfg.DNS, cfg.Region)
-	if err := regionRepo.EnsureSchema(context.Background()); err != nil {
-		log.Fatalf("ensure region schema: %v", err)
-	}
-	if err := zoneRepo.EnsureSchema(context.Background()); err != nil {
-		log.Fatalf("ensure zone schema: %v", err)
-	}
-	if err := nodeService.EnsureSchema(context.Background()); err != nil {
-		log.Fatalf("ensure schema: %v", err)
+	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, bindingStore, resolver, cfg.DNS, cfg.Region)
+	if cfg.App.AutoSchemaUpgrade {
+		if err := regionRepo.EnsureSchema(context.Background()); err != nil {
+			log.Fatalf("ensure region schema: %v", err)
+		}
+		if err := zoneRepo.EnsureSchema(context.Background()); err != nil {
+			log.Fatalf("ensure zone schema: %v", err)
+		}
+		if err := nodeService.EnsureSchema(context.Background()); err != nil {
+			log.Fatalf("ensure schema: %v", err)
+		}
+	} else {
+		log.Print("startup schema upgrade disabled; skipping region/zone/node EnsureSchema")
 	}
 	if err := regionRepo.MigrateNodesRegionUUID(context.Background()); err != nil {
 		log.Fatalf("migrate region_uuid: %v", err)
@@ -51,21 +60,28 @@ func main() {
 	if err := zoneRepo.MigrateNodesZoneUUID(context.Background()); err != nil {
 		log.Fatalf("migrate zone_uuid: %v", err)
 	}
+	if err := nodeService.SyncDNSBindingsFromLocal(context.Background()); err != nil {
+		log.Fatalf("sync local dns bindings: %v", err)
+	}
 
 	var routingHandler *httptransport.RoutingHandler
 	if cfg.Routing.Enabled {
 		observationRepo := mysql.NewObservationRepository(db)
 		snapshotRepo := mysql.NewRoutingSnapshotRepository(db)
 
-		if cfg.Routing.ObservationEnabled || cfg.Routing.SnapshotEnabled {
-			if err := observationRepo.EnsureSchema(context.Background()); err != nil {
-				log.Fatalf("ensure routing observation schema: %v", err)
+		if cfg.App.AutoSchemaUpgrade {
+			if cfg.Routing.ObservationEnabled || cfg.Routing.SnapshotEnabled {
+				if err := observationRepo.EnsureSchema(context.Background()); err != nil {
+					log.Fatalf("ensure routing observation schema: %v", err)
+				}
 			}
-		}
-		if cfg.Routing.SnapshotEnabled {
-			if err := snapshotRepo.EnsureSchema(context.Background()); err != nil {
-				log.Fatalf("ensure routing snapshot schema: %v", err)
+			if cfg.Routing.SnapshotEnabled {
+				if err := snapshotRepo.EnsureSchema(context.Background()); err != nil {
+					log.Fatalf("ensure routing snapshot schema: %v", err)
+				}
 			}
+		} else {
+			log.Print("startup schema upgrade disabled; skipping routing EnsureSchema")
 		}
 
 		var observationService *service.RoutingObservationService

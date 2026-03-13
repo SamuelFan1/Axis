@@ -12,7 +12,7 @@ type NodeRepository interface {
 	FindByUUID(ctx context.Context, uuid string) (*node.Node, error)
 	Upsert(ctx context.Context, item node.Node) error
 	UpdateHeartbeat(ctx context.Context, item node.Node) error
-	EnsureDNSBinding(ctx context.Context, uuid string, prefix string, zone string) (*node.Node, error)
+	SaveDNSBinding(ctx context.Context, uuid string, label string, name string) error
 	List(ctx context.Context) ([]node.Node, error)
 	DeleteByUUID(ctx context.Context, uuid string) (bool, error)
 	UpdateStatus(ctx context.Context, uuid string, status string) (bool, error)
