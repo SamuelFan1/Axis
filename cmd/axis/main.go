@@ -425,35 +425,42 @@ func runZoneList() error {
 	for _, item := range items {
 		rows = append(rows, []string{
 			item.UUID,
+			item.RegionUUID,
+			item.RegionName,
 			item.Name,
 			fmt.Sprintf("%d", item.Total),
 			fmt.Sprintf("%d", item.UpCount),
 			fmt.Sprintf("%d", item.DownCount),
 		})
 	}
-	printTable("ZONE_LIST_RESULT", []string{"UUID", "NAME", "TOTAL", "UP", "DOWN"}, rows)
+	printTable("ZONE_LIST_RESULT", []string{"UUID", "REGION_UUID", "REGION_NAME", "NAME", "TOTAL", "UP", "DOWN"}, rows)
 	return nil
 }
 
 func runZoneCreate(args []string) error {
 	fs := flag.NewFlagSet("zone-create", flag.ContinueOnError)
 	name := fs.String("name", "", "zone name (e.g. SG, CN)")
+	regionUUID := fs.String("region-uuid", "", "parent region uuid")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *name == "" {
 		return fmt.Errorf("--name is required")
 	}
+	if *regionUUID == "" {
+		return fmt.Errorf("--region-uuid is required")
+	}
 	client, err := loadAPIClient()
 	if err != nil {
 		return err
 	}
-	uuid, zoneName, err := client.CreateZone(*name)
+	uuid, zoneRegionUUID, zoneName, err := client.CreateZone(*regionUUID, *name)
 	if err != nil {
 		return err
 	}
 	printRecord("ZONE_CREATE_RESULT", [][2]string{
 		{"UUID", uuid},
+		{"REGION_UUID", zoneRegionUUID},
 		{"NAME", zoneName},
 	})
 	return nil

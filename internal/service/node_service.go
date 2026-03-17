@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"strings"
-	"time"
 
 	"github.com/SamuelFan1/Axis/internal/config"
 	"github.com/SamuelFan1/Axis/internal/domain/node"
@@ -17,62 +16,36 @@ import (
 )
 
 type NodeService struct {
-	repo         repository.NodeRepository
-	regionRepo   repository.RegionRepository
-	zoneRepo     repository.ZoneRepository
-	dnsProvider  platformdns.Provider
-	bindingStore platformdns.BindingStore
-	resolver     platformdns.Resolver
-	dnsConfig    config.DNSConfig
-	regionConfig config.RegionConfig
+	repo           repository.NodeRepository
+	regionRepo     repository.RegionRepository
+	zoneRepo       repository.ZoneRepository
+	dnsProvider    platformdns.Provider
+	dnsBindingRepo repository.DNSBindingRepository
+	dnsConfig      config.DNSConfig
+	regionConfig   config.RegionConfig
 }
 
-func NewNodeService(repo repository.NodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, bindingStore platformdns.BindingStore, resolver platformdns.Resolver, dnsConfig config.DNSConfig, regionConfig config.RegionConfig) *NodeService {
+func NewNodeService(repo repository.NodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsBindingRepo repository.DNSBindingRepository, dnsConfig config.DNSConfig, regionConfig config.RegionConfig) *NodeService {
 	return &NodeService{
-		repo:         repo,
-		regionRepo:   regionRepo,
-		zoneRepo:     zoneRepo,
-		dnsProvider:  dnsProvider,
-		bindingStore: bindingStore,
-		resolver:     resolver,
-		dnsConfig:    dnsConfig,
-		regionConfig: regionConfig,
+		repo:           repo,
+		regionRepo:     regionRepo,
+		zoneRepo:       zoneRepo,
+		dnsProvider:    dnsProvider,
+		dnsBindingRepo: dnsBindingRepo,
+		dnsConfig:      dnsConfig,
+		regionConfig:   regionConfig,
 	}
 }
 
 func (s *NodeService) EnsureSchema(ctx context.Context) error {
-	return s.repo.EnsureSchema(ctx)
-}
-
-func (s *NodeService) SyncDNSBindingsFromLocal(ctx context.Context) error {
-	if !s.dnsConfig.Enabled || s.bindingStore == nil {
-		return nil
+	if err := s.repo.EnsureSchema(ctx); err != nil {
+		return err
 	}
-
-	bindings, err := s.bindingStore.List()
-	if err != nil {
-		return fmt.Errorf("list local dns bindings: %w", err)
-	}
-
-	for _, binding := range bindings {
-		item, err := s.repo.FindByUUID(ctx, binding.NodeUUID)
-		if err != nil {
-			return fmt.Errorf("find node for local dns binding %s: %w", binding.NodeUUID, err)
-		}
-		if item == nil {
-			continue
-		}
-		if strings.TrimSpace(item.DNSLabel) == binding.DNSLabel && strings.TrimSpace(item.DNSName) == binding.DNSName {
-			continue
-		}
-		if err := s.repo.SaveDNSBinding(ctx, binding.NodeUUID, binding.DNSLabel, binding.DNSName); err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
-			return fmt.Errorf("sync local dns binding %s: %w", binding.NodeUUID, err)
+	if s.dnsConfig.Enabled && s.dnsBindingRepo != nil {
+		if err := s.dnsBindingRepo.EnsureSchema(ctx); err != nil {
+			return fmt.Errorf("ensure dns binding schema: %w", err)
 		}
 	}
-
 	return nil
 }
 
@@ -103,7 +76,7 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 		return node.Node{}, fmt.Errorf("region %q not found", item.Region)
 	}
 	item.RegionUUID = r.UUID
-	z, err := s.zoneRepo.FindByName(ctx, item.Zone)
+	z, err := s.zoneRepo.FindByRegionUUIDAndName(ctx, item.RegionUUID, item.Zone)
 	if err != nil {
 		return node.Node{}, fmt.Errorf("find zone: %w", err)
 	}
@@ -121,20 +94,22 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 		return node.Node{}, fmt.Errorf("status must be up or down")
 	}
 
-	existing, err := s.repo.FindByManagementAddress(ctx, item.ManagementAddress)
+	existing, err := s.repo.FindActiveByManagementAddress(ctx, item.ManagementAddress)
 	if err != nil {
 		return node.Node{}, fmt.Errorf("find existing node: %w", err)
 	}
 
 	item.UUID = strings.TrimSpace(item.UUID)
-	if existing != nil {
-		item.UUID = existing.UUID
-	}
 	if item.UUID == "" {
 		item.UUID = uuid.NewString()
 	}
 	if _, err := uuid.Parse(item.UUID); err != nil {
 		return node.Node{}, fmt.Errorf("uuid must be a valid UUID")
+	}
+	if existing != nil && existing.UUID != item.UUID {
+		if err := s.repo.ArchiveAndDeleteByManagementAddress(ctx, item.ManagementAddress, item.UUID, "replaced_by_new_uuid"); err != nil {
+			return node.Node{}, fmt.Errorf("archive existing node: %w", err)
+		}
 	}
 
 	if err := s.repo.Upsert(ctx, item); err != nil {
@@ -301,7 +276,7 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 		return node.Node{}, fmt.Errorf("region %q not found", item.Region)
 	}
 	item.RegionUUID = r.UUID
-	z, err := s.zoneRepo.FindByName(ctx, item.Zone)
+	z, err := s.zoneRepo.FindByRegionUUIDAndName(ctx, item.RegionUUID, item.Zone)
 	if err != nil {
 		return node.Node{}, fmt.Errorf("find zone: %w", err)
 	}
@@ -332,6 +307,7 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 			return node.Node{}, err
 		}
 	}
+	item.Status = s.applyMonitoringHealthPolicy(item.Status, item.MonitoringSnapshot)
 
 	if err := s.repo.UpdateHeartbeat(ctx, item); err != nil {
 		if err == sql.ErrNoRows {
@@ -354,38 +330,11 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	if updated.PublicIP == "" {
 		return *updated, nil
 	}
-
-	currentBinding, err := s.bindingStore.Load(updated.UUID)
-	if err != nil {
-		return node.Node{}, fmt.Errorf("load local dns binding: %w", err)
+	if s.dnsBindingRepo == nil {
+		return node.Node{}, fmt.Errorf("dns binding repository is not configured")
 	}
 
-	if currentBinding == nil {
-		return s.assignNewDNSBinding(ctx, updated)
-	}
-
-	resolvedIPs, err := s.resolver.LookupA(ctx, currentBinding.DNSName)
-	if err != nil {
-		return node.Node{}, fmt.Errorf("lookup dns binding %s: %w", currentBinding.DNSName, err)
-	}
-
-	currentBinding.LastPublicIP = updated.PublicIP
-	currentBinding.UpdatedAt = time.Now().UTC()
-	if containsString(resolvedIPs, updated.PublicIP) {
-		if err := s.bindingStore.Save(*currentBinding); err != nil {
-			return node.Node{}, fmt.Errorf("save local dns binding: %w", err)
-		}
-		if strings.TrimSpace(updated.DNSLabel) != currentBinding.DNSLabel || strings.TrimSpace(updated.DNSName) != currentBinding.DNSName {
-			if err := s.saveDNSBinding(ctx, updated.UUID, currentBinding.DNSLabel, currentBinding.DNSName); err != nil {
-				return node.Node{}, err
-			}
-			updated.DNSLabel = currentBinding.DNSLabel
-			updated.DNSName = currentBinding.DNSName
-		}
-		return *updated, nil
-	}
-
-	return s.assignNewDNSBinding(ctx, updated)
+	return s.ensureCentralDNSBinding(ctx, updated)
 }
 
 func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue string) (json.RawMessage, error) {
@@ -396,10 +345,16 @@ func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue strin
 	return item.MonitoringSnapshot, nil
 }
 
-func (s *NodeService) assignNewDNSBinding(ctx context.Context, item *node.Node) (node.Node, error) {
-	binding, err := s.nextDNSBinding(item.UUID, item.PublicIP)
+func (s *NodeService) ensureCentralDNSBinding(ctx context.Context, item *node.Node) (node.Node, error) {
+	binding, err := s.dnsBindingRepo.GetByNodeUUID(ctx, item.UUID)
 	if err != nil {
-		return node.Node{}, err
+		return node.Node{}, fmt.Errorf("get dns binding: %w", err)
+	}
+	if binding == nil {
+		binding, err = s.dnsBindingRepo.AllocateForNode(ctx, item.UUID, s.dnsConfig.Zone, s.dnsConfig.RecordPrefix)
+		if err != nil {
+			return node.Node{}, fmt.Errorf("allocate dns binding: %w", err)
+		}
 	}
 
 	if err := s.dnsProvider.EnsureRecord(ctx, platformdns.Record{
@@ -412,8 +367,8 @@ func (s *NodeService) assignNewDNSBinding(ctx context.Context, item *node.Node) 
 		return node.Node{}, err
 	}
 
-	if err := s.bindingStore.Save(binding); err != nil {
-		return node.Node{}, fmt.Errorf("save local dns binding: %w", err)
+	if err := s.dnsBindingRepo.UpdateLastPublicIP(ctx, item.UUID, item.PublicIP); err != nil && err != sql.ErrNoRows {
+		return node.Node{}, fmt.Errorf("update dns binding last public ip: %w", err)
 	}
 	if err := s.saveDNSBinding(ctx, item.UUID, binding.DNSLabel, binding.DNSName); err != nil {
 		return node.Node{}, err
@@ -424,22 +379,6 @@ func (s *NodeService) assignNewDNSBinding(ctx context.Context, item *node.Node) 
 	return *item, nil
 }
 
-func (s *NodeService) nextDNSBinding(nodeUUID string, publicIP string) (platformdns.Binding, error) {
-	sequence, err := s.bindingStore.ReserveNextSequence(s.dnsConfig.RecordPrefix)
-	if err != nil {
-		return platformdns.Binding{}, fmt.Errorf("reserve dns sequence: %w", err)
-	}
-
-	label := platformdns.BuildDNSLabel(s.dnsConfig.RecordPrefix, sequence)
-	return platformdns.Binding{
-		NodeUUID:     strings.TrimSpace(nodeUUID),
-		DNSLabel:     label,
-		DNSName:      platformdns.BuildDNSName(label, s.dnsConfig.Zone),
-		LastPublicIP: strings.TrimSpace(publicIP),
-		UpdatedAt:    time.Now().UTC(),
-	}, nil
-}
-
 func (s *NodeService) saveDNSBinding(ctx context.Context, uuid string, label string, name string) error {
 	if err := s.repo.SaveDNSBinding(ctx, uuid, label, name); err != nil {
 		if err == sql.ErrNoRows {
@@ -448,16 +387,6 @@ func (s *NodeService) saveDNSBinding(ctx context.Context, uuid string, label str
 		return fmt.Errorf("save dns binding: %w", err)
 	}
 	return nil
-}
-
-func containsString(items []string, expected string) bool {
-	expected = strings.TrimSpace(expected)
-	for _, item := range items {
-		if strings.TrimSpace(item) == expected {
-			return true
-		}
-	}
-	return false
 }
 
 func weightedScore(item node.Node) float64 {
@@ -515,6 +444,43 @@ func validatePercent(name string, value float64) error {
 		return fmt.Errorf("%s must be between 0 and 100", name)
 	}
 	return nil
+}
+
+func (s *NodeService) applyMonitoringHealthPolicy(status string, snapshot json.RawMessage) string {
+	if !s.dnsConfig.RequireCFTunnelHealth {
+		return status
+	}
+	if strings.ToLower(strings.TrimSpace(status)) == node.StatusDown {
+		return node.StatusDown
+	}
+	if tunnelSourceHealthy(snapshot, s.dnsConfig.CFTunnelSourceName) {
+		return status
+	}
+	return node.StatusDown
+}
+
+func tunnelSourceHealthy(snapshot json.RawMessage, sourceName string) bool {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" || len(snapshot) == 0 {
+		return false
+	}
+
+	var payload struct {
+		Sources []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(snapshot, &payload); err != nil {
+		return false
+	}
+	for _, source := range payload.Sources {
+		if strings.TrimSpace(source.Name) != sourceName {
+			continue
+		}
+		return strings.EqualFold(strings.TrimSpace(source.Status), "ok")
+	}
+	return false
 }
 
 func (s *NodeService) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int) (int, error) {

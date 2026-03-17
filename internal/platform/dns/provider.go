@@ -14,3 +14,7 @@ type Provider interface {
 	EnsureRecord(ctx context.Context, record Record) error
 	Enabled() bool
 }
+
+type SequenceInspector interface {
+	MaxSequence(ctx context.Context, prefix string) (int, error)
+}

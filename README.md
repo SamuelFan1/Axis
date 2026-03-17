@@ -460,7 +460,7 @@ curl -X POST http://127.0.0.1:9090/api/v1/nodes/register \
 - `zone` 为可用区，ISO-3166-1 alpha-2 国家代码（如 SG、CN、US）
 - 只有已在配置中声明的 `region/zone` 组合才能纳管或上报
 - 如果未提供，管理端会自动生成 `uuid4`
-- 同一 `management_address` 再次纳管时会复用已有 UUID
+- `UUID` 是节点长期身份；同一 `management_address` 出现新的 `UUID` 时，旧 active 节点会被自动归档，新 `UUID` 作为新的 active 节点继续纳管
 
 查看已纳管服务器：
 
@@ -516,7 +516,7 @@ AXIS_LOCAL_REGION=asia
 
 **标准 regions 和 zones 必须只在权威区创建一次**，再通过 TiCDC 同步到其他区域；绝对不要在多个区域分别创建同名 region/zone，否则每个区域会分配不同 UUID，导致数据结构分叉。
 
-**重新纳管时必须先清空所有区域的 `AXIS.managed_nodes`**，否则旧 UUID 通过唯一键约束会把新注册覆盖回旧身份。
+**重新纳管时不再按 `management_address` 复用旧 UUID**。如果同一地址上报了新的 `UUID`，旧节点会被归档到历史表，新节点会以新身份进入 active 集合。
 
 ## 可选 DNS 模块
 
@@ -536,20 +536,19 @@ Axis 可在 node 首次成功上报 `public_ip` 后，自动为该 node 分配�
 - `AXIS_DNS_RECORD_PREFIX`：记录前缀，默认 `dl-`
 - `AXIS_DNS_RECORD_TYPE`：默认且当前仅支持 `A`
 - `AXIS_DNS_TTL`：Cloudflare TTL，默认 `1`（自动）
-- `AXIS_DNS_PROXIED`：是否启用 Cloudflare 代理，默认 `false`；当前 DNS 旋转绑定要求保持 `false`
-- `AXIS_DNS_STATE_DIR`：本地 DNS 绑定权威状态目录，默认 `/data/axis/dns-state`
+- `AXIS_DNS_PROXIED`：是否启用 Cloudflare 代理，默认 `false`；当前稳定绑定方案要求保持 `false`
+- `AXIS_DNS_STATE_DIR`：历史兼容配置，已废弃；运行时不再使用本地文件作为 DNS 权威来源
 - `AXIS_DNS_CLOUDFLARE_API_TOKEN`：Cloudflare API Token，必须具备目标 Zone 的 DNS 编辑权限
 
 分配规则：
 
 - 当 `AXIS_DNS_RECORD_PREFIX=dl-` 时，首个成功分配的记录为 `dl-001.<zone>`
 - 后续新增 node 依次递增为 `dl-002.<zone>`、`dl-003.<zone>` ...
-- `Axis` 以本地 `AXIS_DNS_STATE_DIR` 下按 node UUID 保存的绑定文件作为权威来源，MySQL 只镜像当前绑定
-- 当前实现假定只有单个 `axisd` 实例持有这份本地状态目录
-- 同一个 node 上报时会先检查当前本地绑定域名的公网 `A` 解析是否包含该 node 最新 `public_ip`
-- 如果解析结果包含当前 `public_ip`，则继续复用原 `dns_name`，不新增记录
-- 如果解析结果不包含当前 `public_ip`，则解除 node 与旧记录的绑定，并为该 node 分配一个全新的 `dl-xxx`
-- 旧 Cloudflare 记录会保留，不会被删除或更新
+- DNS 权威状态存储在数据库中心表中，多台 `axisd` 共享同一份绑定真相
+- 一个 `UUID` 在首次拿到 `dl-*` 后会稳定复用该绑定；后续心跳只会更新同名 A 记录的 `public_ip`
+- 递归 DNS 查询不再参与分配决策，避免因为缓存或传播延迟导致误分配
+- `dl-*` 永不复用；节点删除后，旧号码不会自动重新分配给其他节点
+- Cloudflare 作为执行层按中心权威状态幂等更新，历史孤儿记录需要通过审计后人工清理
 - 只有 `public_ip` 非空时才会触发 DNS 写入；公网 IP 探测失败不会阻塞基础纳管和心跳数据落库
 
 ## 可选监控快照
@@ -561,9 +560,29 @@ Axis 当前已经支持 node 在心跳时附带通用 `monitoring_snapshot`。
 - `monitoring_snapshot` 是通用 JSON 快照，不绑定某个具体业务
 - Axis 负责被动接收、存储和展示，不会主动回源到 node 本地服务拉取监控数据
 - node 端是否上报、上报哪些 source，由 `axis-node` 的本地 provider 配置决定
-- 未上报 `monitoring_snapshot` 时，不影响基础纳管、心跳和区域调度能力
+- 默认情况下，未上报 `monitoring_snapshot` 不影响基础纳管、心跳和区域调度能力
 - 如果某个本地 provider 依赖宿主机访问 Docker 内服务，应由该服务自身放行受信宿主机/容器网络来源，而不是强制只允许容器内 `127.0.0.1`
 - 以当前 `go-sidecar` provider 为例，推荐通过 `WORKLOAD_STATS_TRUSTED_CIDRS` 显式信任宿主机本地、Docker 网络和 VPN 私网
+
+可选的节点健康策略配置：
+
+- `AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH`
+- `AXIS_NODE_CF_TUNNEL_SOURCE_NAME`
+
+行为定义：
+
+- 默认 `AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH=false`，Axis 继续只信任 node 自报 `status` 与心跳超时
+- 开启后，Axis 会在 `Report()` 中解析 `monitoring_snapshot`
+- 若指定 source 缺失、状态不是 `ok`、或快照本身无法解析，则本次心跳会把节点最终 `status` 收敛为 `down`
+- 若指定 source 状态为 `ok`，则允许 node 保持自报的 `status`
+- 管理员手工执行 `service-up` 只会临时生效；下一次 node 心跳仍会按该策略重新收敛
+
+示例：
+
+```env
+AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH=true
+AXIS_NODE_CF_TUNNEL_SOURCE_NAME=cloudflared
+```
 
 查看最近一次上报的节点监控快照：
 

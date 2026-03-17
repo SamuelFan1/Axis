@@ -80,14 +80,14 @@ type deleteNodeResponse struct {
 
 type listRegionZonesResponse struct {
 	RegionZones []node.RegionZoneSummary `json:"region_zones"`
-	Count       int                     `json:"count"`
-	Error       string                  `json:"error"`
+	Count       int                      `json:"count"`
+	Error       string                   `json:"error"`
 }
 
 type listRegionsResponse struct {
 	Regions []regionListItem `json:"regions"`
 	Count   int              `json:"count"`
-	Error   string          `json:"error"`
+	Error   string           `json:"error"`
 }
 
 type regionListItem struct {
@@ -191,11 +191,13 @@ func (c *Client) DeleteRegion(uuid string) error {
 }
 
 type zoneListItem struct {
-	UUID      string `json:"uuid"`
-	Name      string `json:"name"`
-	Total     int    `json:"total"`
-	UpCount   int    `json:"up_count"`
-	DownCount int    `json:"down_count"`
+	UUID       string `json:"uuid"`
+	RegionUUID string `json:"region_uuid"`
+	RegionName string `json:"region_name"`
+	Name       string `json:"name"`
+	Total      int    `json:"total"`
+	UpCount    int    `json:"up_count"`
+	DownCount  int    `json:"down_count"`
 }
 
 func (c *Client) ListZones() ([]zoneListItem, error) {
@@ -210,19 +212,20 @@ func (c *Client) ListZones() ([]zoneListItem, error) {
 	return resp.Zones, nil
 }
 
-func (c *Client) CreateZone(name string) (uuid, zoneName string, err error) {
+func (c *Client) CreateZone(regionUUID, name string) (uuid, regionValue, zoneName string, err error) {
 	var resp struct {
 		Message string `json:"message"`
 		Zone    struct {
-			UUID string `json:"uuid"`
-			Name string `json:"name"`
+			UUID       string `json:"uuid"`
+			RegionUUID string `json:"region_uuid"`
+			Name       string `json:"name"`
 		} `json:"zone"`
 		Error string `json:"error"`
 	}
-	if err := c.doJSON(nethttp.MethodPost, "/api/v1/zones", map[string]string{"name": name}, &resp); err != nil {
-		return "", "", err
+	if err := c.doJSON(nethttp.MethodPost, "/api/v1/zones", map[string]string{"region_uuid": regionUUID, "name": name}, &resp); err != nil {
+		return "", "", "", err
 	}
-	return resp.Zone.UUID, resp.Zone.Name, nil
+	return resp.Zone.UUID, resp.Zone.RegionUUID, resp.Zone.Name, nil
 }
 
 func (c *Client) DeleteZone(uuid string) error {

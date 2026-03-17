@@ -16,7 +16,8 @@ func NewZoneHandler(zoneService *service.ZoneService) *ZoneHandler {
 }
 
 type createZoneRequest struct {
-	Name string `json:"name"`
+	Name       string `json:"name"`
+	RegionUUID string `json:"region_uuid"`
 }
 
 func (h *ZoneHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -25,14 +26,18 @@ func (h *ZoneHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json body"})
 		return
 	}
-	z, err := h.zoneService.Create(r.Context(), req.Name)
+	z, err := h.zoneService.Create(r.Context(), req.RegionUUID, req.Name)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"message": "zone created",
-		"zone":    map[string]string{"uuid": z.UUID, "name": z.Name},
+		"zone": map[string]string{
+			"uuid":        z.UUID,
+			"region_uuid": z.RegionUUID,
+			"name":        z.Name,
+		},
 	})
 }
 

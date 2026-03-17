@@ -14,13 +14,15 @@ import (
 type RegionService struct {
 	regionRepo repository.RegionRepository
 	nodeRepo   repository.NodeRepository
+	zoneRepo   repository.ZoneRepository
 	config     config.RegionConfig
 }
 
-func NewRegionService(regionRepo repository.RegionRepository, nodeRepo repository.NodeRepository, cfg config.RegionConfig) *RegionService {
+func NewRegionService(regionRepo repository.RegionRepository, nodeRepo repository.NodeRepository, zoneRepo repository.ZoneRepository, cfg config.RegionConfig) *RegionService {
 	return &RegionService{
 		regionRepo: regionRepo,
 		nodeRepo:   nodeRepo,
+		zoneRepo:   zoneRepo,
 		config:     cfg,
 	}
 }
@@ -64,6 +66,13 @@ func (s *RegionService) DeleteByUUID(ctx context.Context, regionUUID string) err
 	}
 	if _, err := uuid.Parse(regionUUID); err != nil {
 		return fmt.Errorf("invalid region uuid")
+	}
+	zoneCount, err := s.zoneRepo.CountByRegionUUID(ctx, regionUUID)
+	if err != nil {
+		return fmt.Errorf("count zones by region: %w", err)
+	}
+	if zoneCount > 0 {
+		return fmt.Errorf("region still has %d zone(s), delete zones first", zoneCount)
 	}
 	// Delete associated nodes first (cascade)
 	if _, err := s.regionRepo.DeleteNodesByRegionUUID(ctx, regionUUID); err != nil {

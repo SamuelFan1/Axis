@@ -23,8 +23,9 @@ type CloudflareKVPublisher struct {
 }
 
 type kvBulkItem struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key            string `json:"key"`
+	Value          string `json:"value"`
+	ExpirationTTL  int    `json:"expiration_ttl,omitempty"`
 }
 
 type bulkUpdateEnvelope struct {
@@ -60,13 +61,19 @@ func (p *CloudflareKVPublisher) PublishSnapshot(ctx context.Context, manifest ro
 
 	items := make([]kvBulkItem, 0, len(bundles)+1)
 
+	// Calculate KV expiration_ttl from manifest ExpiresAt.
+	// Add a buffer so CF doesn't evict the key before the next publish cycle
+	// replaces it. Minimum 60s required by Cloudflare KV API.
+	manifestTTL := kvTTLSeconds(manifest.ExpiresAt, 120)
+
 	manifestPayload, err := json.Marshal(manifest)
 	if err != nil {
 		return fmt.Errorf("marshal routing manifest for kv: %w", err)
 	}
 	items = append(items, kvBulkItem{
-		Key:   routing.ManifestKVKey,
-		Value: string(manifestPayload),
+		Key:           routing.ManifestKVKey,
+		Value:         string(manifestPayload),
+		ExpirationTTL: manifestTTL,
 	})
 
 	for _, bundle := range bundles {
@@ -74,9 +81,11 @@ func (p *CloudflareKVPublisher) PublishSnapshot(ctx context.Context, manifest ro
 		if err != nil {
 			return fmt.Errorf("marshal routing bundle for kv: %w", err)
 		}
+		bundleTTL := kvTTLSeconds(bundle.ExpiresAt, 120)
 		items = append(items, kvBulkItem{
-			Key:   bundle.Key,
-			Value: string(payload),
+			Key:           bundle.Key,
+			Value:         string(payload),
+			ExpirationTTL: bundleTTL,
 		})
 	}
 
@@ -120,6 +129,16 @@ func (p *CloudflareKVPublisher) PublishSnapshot(ctx context.Context, manifest ro
 	}
 
 	return nil
+}
+
+// kvTTLSeconds computes a KV expiration_ttl from an ExpiresAt timestamp.
+// It returns at least minSeconds so Cloudflare accepts the value.
+func kvTTLSeconds(expiresAt time.Time, minSeconds int) int {
+	remaining := int(time.Until(expiresAt).Seconds())
+	if remaining < minSeconds {
+		return minSeconds
+	}
+	return remaining
 }
 
 func joinErrors(items []struct {

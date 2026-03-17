@@ -12,42 +12,69 @@ import (
 )
 
 type ZoneService struct {
-	zoneRepo repository.ZoneRepository
-	nodeRepo repository.NodeRepository
-	config   config.RegionConfig
+	zoneRepo   repository.ZoneRepository
+	regionRepo repository.RegionRepository
+	config     config.RegionConfig
 }
 
-func NewZoneService(zoneRepo repository.ZoneRepository, nodeRepo repository.NodeRepository, cfg config.RegionConfig) *ZoneService {
+func NewZoneService(zoneRepo repository.ZoneRepository, regionRepo repository.RegionRepository, cfg config.RegionConfig) *ZoneService {
 	return &ZoneService{
-		zoneRepo: zoneRepo,
-		nodeRepo: nodeRepo,
-		config:   cfg,
+		zoneRepo:   zoneRepo,
+		regionRepo: regionRepo,
+		config:     cfg,
 	}
 }
 
-func (s *ZoneService) Create(ctx context.Context, name string) (zone.Zone, error) {
+func (s *ZoneService) Create(ctx context.Context, regionUUID string, name string) (zone.Zone, error) {
+	regionUUID = strings.TrimSpace(regionUUID)
 	name = strings.TrimSpace(strings.ToUpper(name))
-	if err := s.config.ValidateZone(name); err != nil {
+	if regionUUID == "" {
+		return zone.Zone{}, fmt.Errorf("region uuid is required")
+	}
+	if _, err := uuid.Parse(regionUUID); err != nil {
+		return zone.Zone{}, fmt.Errorf("invalid region uuid")
+	}
+	regionItem, err := s.regionRepo.FindByUUID(ctx, regionUUID)
+	if err != nil {
+		return zone.Zone{}, fmt.Errorf("find region by uuid: %w", err)
+	}
+	if regionItem == nil {
+		return zone.Zone{}, fmt.Errorf("region not found")
+	}
+	if err := s.config.ValidateRegionZone(regionItem.Name, name); err != nil {
 		return zone.Zone{}, err
 	}
-	return s.zoneRepo.Create(ctx, name)
+	return s.zoneRepo.Create(ctx, regionUUID, name)
 }
 
 func (s *ZoneService) EnsureConfigured(ctx context.Context) error {
-	for _, name := range s.config.AllZones() {
-		normalized := strings.TrimSpace(strings.ToUpper(name))
-		if normalized == "" {
+	for _, regionName := range s.config.Regions {
+		normalizedRegion := strings.TrimSpace(strings.ToLower(regionName))
+		if normalizedRegion == "" {
 			continue
 		}
-		existing, err := s.zoneRepo.FindByName(ctx, normalized)
+		regionItem, err := s.regionRepo.FindByName(ctx, normalizedRegion)
 		if err != nil {
-			return fmt.Errorf("find configured zone %q: %w", normalized, err)
+			return fmt.Errorf("find configured region %q: %w", normalizedRegion, err)
 		}
-		if existing != nil {
+		if regionItem == nil {
 			continue
 		}
-		if _, err := s.zoneRepo.Create(ctx, normalized); err != nil {
-			return fmt.Errorf("create configured zone %q: %w", normalized, err)
+		for _, zoneName := range s.config.RegionZones[normalizedRegion] {
+			normalizedZone := strings.TrimSpace(strings.ToUpper(zoneName))
+			if normalizedZone == "" {
+				continue
+			}
+			existing, err := s.zoneRepo.FindByRegionUUIDAndName(ctx, regionItem.UUID, normalizedZone)
+			if err != nil {
+				return fmt.Errorf("find configured zone %q for region %q: %w", normalizedZone, normalizedRegion, err)
+			}
+			if existing != nil {
+				continue
+			}
+			if _, err := s.zoneRepo.Create(ctx, regionItem.UUID, normalizedZone); err != nil {
+				return fmt.Errorf("create configured zone %q for region %q: %w", normalizedZone, normalizedRegion, err)
+			}
 		}
 	}
 	return nil

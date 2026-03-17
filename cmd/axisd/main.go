@@ -31,37 +31,63 @@ func main() {
 	zoneRepo := mysql.NewZoneRepository(db)
 
 	dnsProvider := platformdns.NewNoopProvider()
-	var bindingStore platformdns.BindingStore
-	var resolver platformdns.Resolver
+	var dnsBindingRepo *mysql.DNSBindingRepository
 	if cfg.DNS.Enabled && cfg.DNS.Provider == "cloudflare" {
 		dnsProvider = platformdns.NewCloudflareProvider(cfg.DNS)
-		bindingStore = platformdns.NewFileBindingStore(cfg.DNS.StateDir)
-		resolver = platformdns.NewNetResolver()
+		dnsBindingRepo = mysql.NewDNSBindingRepository(db)
 	}
-	regionService := service.NewRegionService(regionRepo, nodeRepo, cfg.Region)
-	zoneService := service.NewZoneService(zoneRepo, nodeRepo, cfg.Region)
-	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, bindingStore, resolver, cfg.DNS, cfg.Region)
+	regionService := service.NewRegionService(regionRepo, nodeRepo, zoneRepo, cfg.Region)
+	zoneService := service.NewZoneService(zoneRepo, regionRepo, cfg.Region)
+	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region)
+	ctx := context.Background()
 	if cfg.App.AutoSchemaUpgrade {
-		if err := regionRepo.EnsureSchema(context.Background()); err != nil {
+		if err := regionRepo.EnsureSchema(ctx); err != nil {
 			log.Fatalf("ensure region schema: %v", err)
 		}
-		if err := zoneRepo.EnsureSchema(context.Background()); err != nil {
+		if err := zoneRepo.EnsureSchema(ctx); err != nil {
 			log.Fatalf("ensure zone schema: %v", err)
 		}
-		if err := nodeService.EnsureSchema(context.Background()); err != nil {
+		if err := nodeService.EnsureSchema(ctx); err != nil {
 			log.Fatalf("ensure schema: %v", err)
+		}
+		if err := regionService.EnsureConfigured(ctx); err != nil {
+			log.Fatalf("ensure configured regions: %v", err)
+		}
+		if err := zoneService.EnsureConfigured(ctx); err != nil {
+			log.Fatalf("ensure configured zones: %v", err)
+		}
+		if err := zoneRepo.EnsureConstraints(ctx); err != nil {
+			log.Fatalf("ensure zone relational constraints: %v", err)
 		}
 	} else {
 		log.Print("startup schema upgrade disabled; skipping region/zone/node EnsureSchema")
 	}
-	if err := regionRepo.MigrateNodesRegionUUID(context.Background()); err != nil {
-		log.Fatalf("migrate region_uuid: %v", err)
-	}
-	if err := zoneRepo.MigrateNodesZoneUUID(context.Background()); err != nil {
-		log.Fatalf("migrate zone_uuid: %v", err)
-	}
-	if err := nodeService.SyncDNSBindingsFromLocal(context.Background()); err != nil {
-		log.Fatalf("sync local dns bindings: %v", err)
+	if cfg.App.AutoSchemaUpgrade {
+		if err := regionRepo.MigrateNodesRegionUUID(ctx); err != nil {
+			log.Fatalf("migrate region_uuid: %v", err)
+		}
+		if err := zoneRepo.MigrateNodesZoneUUID(ctx); err != nil {
+			log.Fatalf("migrate zone_uuid: %v", err)
+		}
+		if dnsBindingRepo != nil {
+			seedResult, err := dnsBindingRepo.SeedFromManagedNodes(ctx, cfg.DNS.Zone, cfg.DNS.RecordPrefix)
+			if err != nil {
+				log.Fatalf("seed dns bindings from managed_nodes: %v", err)
+			}
+			floor := maxInt(seedResult.ManagedNodesMaxSequence, seedResult.DNSBindingsMaxSequence)
+			if inspector, ok := dnsProvider.(platformdns.SequenceInspector); ok {
+				cloudflareMaxSequence, err := inspector.MaxSequence(ctx, cfg.DNS.RecordPrefix)
+				if err != nil {
+					log.Fatalf("inspect cloudflare dns max sequence: %v", err)
+				}
+				floor = maxInt(floor, cloudflareMaxSequence)
+			}
+			if err := dnsBindingRepo.EnsureCounterFloor(ctx, cfg.DNS.Zone, cfg.DNS.RecordPrefix, floor); err != nil {
+				log.Fatalf("ensure dns binding counter floor: %v", err)
+			}
+		}
+	} else {
+		log.Print("startup data reconciliation disabled; skipping managed_nodes backfill and dns seed")
 	}
 
 	var routingHandler *httptransport.RoutingHandler
@@ -124,4 +150,14 @@ func main() {
 	if err := server.Run(); err != nil {
 		log.Fatalf("run http server: %v", err)
 	}
+}
+
+func maxInt(items ...int) int {
+	best := 0
+	for _, item := range items {
+		if item > best {
+			best = item
+		}
+	}
+	return best
 }

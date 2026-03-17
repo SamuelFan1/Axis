@@ -59,6 +59,46 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 	if _, err := r.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("create managed_nodes table: %w", err)
 	}
+	const historyDDL = `
+CREATE TABLE IF NOT EXISTS managed_nodes_history (
+    history_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    uuid VARCHAR(36) NOT NULL,
+    hostname VARCHAR(255) NOT NULL,
+    management_address VARCHAR(255) NOT NULL,
+    internal_ip VARCHAR(64) DEFAULT '',
+    public_ip VARCHAR(64) DEFAULT '',
+    dns_label VARCHAR(64) NULL DEFAULT NULL,
+    dns_name VARCHAR(255) NULL DEFAULT NULL,
+    region VARCHAR(64) NOT NULL,
+    region_uuid VARCHAR(36) NULL DEFAULT NULL,
+    zone VARCHAR(16) NOT NULL DEFAULT '',
+    zone_uuid VARCHAR(36) NULL DEFAULT NULL,
+    status VARCHAR(16) NOT NULL,
+    cpu_cores INT NOT NULL DEFAULT 0,
+    cpu_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    memory_total_gb DOUBLE NOT NULL DEFAULT 0,
+    memory_used_gb DOUBLE NOT NULL DEFAULT 0,
+    memory_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    swap_total_gb DOUBLE NOT NULL DEFAULT 0,
+    swap_used_gb DOUBLE NOT NULL DEFAULT 0,
+    swap_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    disk_usage_percent DOUBLE NOT NULL DEFAULT 0,
+    disk_details JSON NULL,
+    monitoring_snapshot JSON NULL,
+    created_at DATETIME(6) NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    last_seen_at DATETIME(6) NOT NULL,
+    last_reported_at DATETIME(6) NULL,
+    archived_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    archive_reason VARCHAR(64) NOT NULL,
+    replaced_by_uuid VARCHAR(36) NULL DEFAULT NULL,
+    KEY idx_history_management_address (management_address),
+    KEY idx_history_uuid (uuid),
+    KEY idx_history_archived_at (archived_at)
+)`
+	if _, err := r.db.ExecContext(ctx, historyDDL); err != nil {
+		return fmt.Errorf("create managed_nodes_history table: %w", err)
+	}
 	for _, stmt := range []string{
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS cpu_usage_percent DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_usage_percent DOUBLE NOT NULL DEFAULT 0`,
@@ -79,6 +119,27 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone VARCHAR(16) NOT NULL DEFAULT ''`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS region_uuid VARCHAR(36) NULL DEFAULT NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone_uuid VARCHAR(36) NULL DEFAULT NULL`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS internal_ip VARCHAR(64) DEFAULT ''`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS public_ip VARCHAR(64) DEFAULT ''`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS dns_label VARCHAR(64) NULL DEFAULT NULL`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS dns_name VARCHAR(255) NULL DEFAULT NULL`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS region_uuid VARCHAR(36) NULL DEFAULT NULL`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS zone VARCHAR(16) NOT NULL DEFAULT ''`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS zone_uuid VARCHAR(36) NULL DEFAULT NULL`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS cpu_cores INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS cpu_usage_percent DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS memory_total_gb DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS memory_used_gb DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS memory_usage_percent DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS swap_total_gb DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS swap_used_gb DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS swap_usage_percent DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS disk_usage_percent DOUBLE NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS disk_details JSON NULL`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS monitoring_snapshot JSON NULL`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS archived_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS archive_reason VARCHAR(64) NOT NULL DEFAULT 'unknown'`,
+		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS replaced_by_uuid VARCHAR(36) NULL DEFAULT NULL`,
 	} {
 		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("upgrade managed_nodes table: %w", err)
@@ -132,6 +193,10 @@ const selectNodeColumns = `
     last_reported_at`
 
 func (r *NodeRepository) FindByManagementAddress(ctx context.Context, managementAddress string) (*node.Node, error) {
+	return r.FindActiveByManagementAddress(ctx, managementAddress)
+}
+
+func (r *NodeRepository) FindActiveByManagementAddress(ctx context.Context, managementAddress string) (*node.Node, error) {
 	const query = `SELECT` + selectNodeColumns + `
 FROM managed_nodes
 WHERE management_address = ?
@@ -143,7 +208,7 @@ LIMIT 1`
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("find managed node by management address: %w", err)
+		return nil, fmt.Errorf("find active managed node by management address: %w", err)
 	}
 
 	return &item, nil
@@ -168,6 +233,8 @@ LIMIT 1`
 }
 
 func (r *NodeRepository) Upsert(ctx context.Context, item node.Node) error {
+	// region/zone text columns remain the hot-path read model for scheduling and routing,
+	// while region_uuid/zone_uuid act as relational anchors to static master data.
 	const query = `
 INSERT INTO managed_nodes (
     uuid, hostname, management_address, region, region_uuid, zone, zone_uuid, status, cpu_usage_percent, memory_usage_percent, disk_usage_percent, created_at, updated_at, last_seen_at, last_reported_at
@@ -213,6 +280,9 @@ ON DUPLICATE KEY UPDATE
 func (r *NodeRepository) UpdateHeartbeat(ctx context.Context, item node.Node) error {
 	diskDetailsJSON := marshalDiskDetails(item.DiskDetails)
 	monitoringSnapshotJSON := marshalRawJSON(item.MonitoringSnapshot)
+	// dns_label/dns_name remain display mirrors on managed_nodes. The authoritative
+	// DNS mapping lives in dns_bindings and is only mirrored back after successful
+	// binding updates.
 	const query = `
 UPDATE managed_nodes
 SET
@@ -314,6 +384,77 @@ func (r *NodeRepository) SaveDNSBinding(ctx context.Context, uuid string, label 
 	if rowsAffected == 0 {
 		return sql.ErrNoRows
 	}
+	return nil
+}
+
+func (r *NodeRepository) ArchiveAndDeleteByManagementAddress(ctx context.Context, managementAddress string, replacedByUUID string, reason string) error {
+	managementAddress = strings.TrimSpace(managementAddress)
+	replacedByUUID = strings.TrimSpace(replacedByUUID)
+	reason = strings.TrimSpace(reason)
+	if managementAddress == "" {
+		return fmt.Errorf("management address is required")
+	}
+	if reason == "" {
+		reason = "replaced"
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin archive managed node tx: %w", err)
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	insertResult, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO managed_nodes_history (
+		     uuid, hostname, management_address, internal_ip, public_ip, dns_label, dns_name,
+		     region, region_uuid, zone, zone_uuid, status, cpu_cores, cpu_usage_percent,
+		     memory_total_gb, memory_used_gb, memory_usage_percent, swap_total_gb, swap_used_gb,
+		     swap_usage_percent, disk_usage_percent, disk_details, monitoring_snapshot,
+		     created_at, updated_at, last_seen_at, last_reported_at, archived_at,
+		     archive_reason, replaced_by_uuid
+		 )
+		 SELECT
+		     uuid, hostname, management_address, internal_ip, public_ip, dns_label, dns_name,
+		     region, region_uuid, zone, zone_uuid, status, cpu_cores, cpu_usage_percent,
+		     memory_total_gb, memory_used_gb, memory_usage_percent, swap_total_gb, swap_used_gb,
+		     swap_usage_percent, disk_usage_percent, disk_details, monitoring_snapshot,
+		     created_at, updated_at, last_seen_at, last_reported_at, CURRENT_TIMESTAMP(6),
+		     ?, NULLIF(?, '')
+		 FROM managed_nodes
+		 WHERE management_address = ?`,
+		reason,
+		replacedByUUID,
+		managementAddress,
+	)
+	if err != nil {
+		return fmt.Errorf("archive managed node by management address: %w", err)
+	}
+
+	rowsAffected, err := insertResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("archive managed node rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit empty archive managed node tx: %w", err)
+		}
+		tx = nil
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM managed_nodes WHERE management_address = ?`, managementAddress); err != nil {
+		return fmt.Errorf("delete managed node by management address: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit archive managed node tx: %w", err)
+	}
+	tx = nil
 	return nil
 }
 

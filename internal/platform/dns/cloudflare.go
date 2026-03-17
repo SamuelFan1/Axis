@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,13 @@ type cloudflareEnvelope[T any] struct {
 		Message string `json:"message"`
 	} `json:"errors"`
 	Result T `json:"result"`
+	ResultInfo struct {
+		Page       int `json:"page"`
+		PerPage    int `json:"per_page"`
+		TotalPages int `json:"total_pages"`
+		Count      int `json:"count"`
+		TotalCount int `json:"total_count"`
+	} `json:"result_info"`
 }
 
 type cloudflareZone struct {
@@ -59,6 +67,58 @@ func NewCloudflareProvider(cfg config.DNSConfig) Provider {
 
 func (p *CloudflareProvider) Enabled() bool {
 	return true
+}
+
+func (p *CloudflareProvider) MaxSequence(ctx context.Context, prefix string) (int, error) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return 0, fmt.Errorf("dns prefix is required")
+	}
+
+	zoneID, err := p.getZoneID(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	maxSequence := 0
+	page := 1
+	for {
+		values := url.Values{}
+		values.Set("type", "A")
+		values.Set("page", strconv.Itoa(page))
+		values.Set("per_page", "100")
+
+		var resp cloudflareEnvelope[[]cloudflareDNSRecord]
+		if err := p.doJSON(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+values.Encode(), nil, &resp); err != nil {
+			return 0, fmt.Errorf("list cloudflare dns records for max sequence: %w", err)
+		}
+
+		if len(resp.Result) == 0 {
+			break
+		}
+
+		for _, record := range resp.Result {
+			label := strings.TrimSpace(record.Name)
+			if strings.HasSuffix(strings.ToLower(label), "."+strings.ToLower(p.zone)) {
+				label = strings.TrimSuffix(label, "."+p.zone)
+			}
+			sequence, ok := ParseDNSSequence(prefix, label)
+			if ok && sequence > maxSequence {
+				maxSequence = sequence
+			}
+		}
+
+		if resp.ResultInfo.TotalPages > 0 {
+			if page >= resp.ResultInfo.TotalPages {
+				break
+			}
+		} else if len(resp.Result) < 100 {
+			break
+		}
+		page++
+	}
+
+	return maxSequence, nil
 }
 
 func (p *CloudflareProvider) EnsureRecord(ctx context.Context, record Record) error {

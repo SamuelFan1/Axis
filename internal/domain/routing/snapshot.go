@@ -45,6 +45,9 @@ type Manifest struct {
 	GlobalCandidates []Candidate            `json:"global_candidates"`
 }
 
-func BundleKVKey(version, region string) string {
-	return fmt.Sprintf("routing:snapshot:%s:%s", version, region)
+// BundleKVKey returns a fixed (non-versioned) KV key for a routing bundle.
+// Using a fixed key ensures each publish overwrites the previous bundle
+// and prevents unbounded KV key accumulation.
+func BundleKVKey(region string) string {
+	return fmt.Sprintf("routing:bundle:%s", region)
 }

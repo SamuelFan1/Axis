@@ -142,7 +142,7 @@ func (s *RoutingSnapshotService) Generate(ctx context.Context) (routing.Manifest
 			sortObservedCandidates(entries[sourceColo])
 			entries[sourceColo] = trimCandidates(entries[sourceColo], topN)
 		}
-		key := routing.BundleKVKey(version, regionName)
+		key := routing.BundleKVKey(regionName)
 		bundle := routing.Bundle{
 			Version:     version,
 			Region:      regionName,

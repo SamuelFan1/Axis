@@ -64,6 +64,8 @@ type DNSConfig struct {
 	Proxied            bool
 	StateDir           string
 	CloudflareAPIToken string
+	RequireCFTunnelHealth bool
+	CFTunnelSourceName    string
 }
 
 type RoutingConfig struct {
@@ -105,15 +107,17 @@ func Load() (*Config, error) {
 			MaxIdleConns: getEnvInt("AXIS_DB_MAX_IDLE_CONNS", 5),
 		},
 		DNS: DNSConfig{
-			Enabled:            getEnvBool("AXIS_DNS_ENABLED", false),
-			Provider:           strings.ToLower(getEnv("AXIS_DNS_PROVIDER", "")),
-			Zone:               strings.TrimSpace(getEnv("AXIS_DNS_ZONE", "")),
-			RecordPrefix:       getEnv("AXIS_DNS_RECORD_PREFIX", "dl-"),
-			RecordType:         strings.ToUpper(getEnv("AXIS_DNS_RECORD_TYPE", "A")),
-			TTL:                getEnvInt("AXIS_DNS_TTL", 1),
-			Proxied:            getEnvBool("AXIS_DNS_PROXIED", false),
-			StateDir:           strings.TrimSpace(getEnv("AXIS_DNS_STATE_DIR", "/data/axis/dns-state")),
-			CloudflareAPIToken: getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
+			Enabled:                getEnvBool("AXIS_DNS_ENABLED", false),
+			Provider:               strings.ToLower(getEnv("AXIS_DNS_PROVIDER", "")),
+			Zone:                   strings.TrimSpace(getEnv("AXIS_DNS_ZONE", "")),
+			RecordPrefix:           getEnv("AXIS_DNS_RECORD_PREFIX", "dl-"),
+			RecordType:             strings.ToUpper(getEnv("AXIS_DNS_RECORD_TYPE", "A")),
+			TTL:                    getEnvInt("AXIS_DNS_TTL", 1),
+			Proxied:                getEnvBool("AXIS_DNS_PROXIED", false),
+			StateDir:               strings.TrimSpace(getEnv("AXIS_DNS_STATE_DIR", "/data/axis/dns-state")),
+			CloudflareAPIToken:     getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
+			RequireCFTunnelHealth:  getEnvBool("AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH", false),
+			CFTunnelSourceName:     strings.TrimSpace(getEnv("AXIS_NODE_CF_TUNNEL_SOURCE_NAME", "cloudflared")),
 		},
 		Routing: RoutingConfig{
 			Enabled:                 getEnvBool("AXIS_ROUTING_ENABLED", false),
@@ -160,6 +164,9 @@ func Load() (*Config, error) {
 	if strings.TrimSpace(cfg.DNS.RecordPrefix) == "" {
 		cfg.DNS.RecordPrefix = "dl-"
 	}
+	if strings.TrimSpace(cfg.DNS.CFTunnelSourceName) == "" {
+		cfg.DNS.CFTunnelSourceName = "cloudflared"
+	}
 	if cfg.DNS.RecordType == "" {
 		cfg.DNS.RecordType = "A"
 	}
@@ -178,9 +185,6 @@ func Load() (*Config, error) {
 		}
 		if cfg.DNS.RecordType != "A" {
 			return nil, fmt.Errorf("AXIS_DNS_RECORD_TYPE must be A")
-		}
-		if strings.TrimSpace(cfg.DNS.StateDir) == "" {
-			return nil, fmt.Errorf("AXIS_DNS_STATE_DIR must be set when AXIS_DNS_ENABLED is true")
 		}
 		if cfg.DNS.Proxied {
 			return nil, fmt.Errorf("AXIS_DNS_PROXIED must be false when AXIS_DNS_ENABLED is true")

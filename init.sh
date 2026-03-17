@@ -17,6 +17,9 @@ AXISD_OUTPUT="${PROJECT_ROOT}/axisd"
 AXIS_OUTPUT="${PROJECT_ROOT}/axis"
 AXISD_TARGET="/usr/local/bin/axisd"
 AXIS_TARGET="/usr/local/bin/axis"
+ENV_FILE="${PROJECT_ROOT}/.env"
+ENV_EXAMPLE_FILE="${PROJECT_ROOT}/.env.example"
+REGION_MAPPING_FILE="${PROJECT_ROOT}/../NetStone/NetStone/conf/server_region_mapping.yaml"
 
 if [[ ! -f "${PROJECT_ROOT}/README.md" ]]; then
   echo -e "${RED}Error:${NC} script must live in the Axis project root."
@@ -26,6 +29,16 @@ fi
 if [[ ! -f "${SERVICE_FILE_SOURCE}" ]]; then
   echo -e "${RED}Error:${NC} missing systemd unit: ${SERVICE_FILE_SOURCE}"
   exit 1
+fi
+
+if [[ ! -f "${ENV_FILE}" ]]; then
+  if [[ -f "${ENV_EXAMPLE_FILE}" ]]; then
+    echo -e "${YELLOW}.env not found, copying from .env.example...${NC}"
+    cp "${ENV_EXAMPLE_FILE}" "${ENV_FILE}"
+  else
+    echo -e "${RED}Error:${NC} missing ${ENV_FILE} and ${ENV_EXAMPLE_FILE}."
+    exit 1
+  fi
 fi
 
 if [[ "${EUID}" -eq 0 ]]; then
@@ -46,11 +59,121 @@ run_root() {
   fi
 }
 
+resolve_node_hostname() {
+  if [[ -n "${HOST_HOSTNAME:-}" ]]; then
+    printf '%s\n' "${HOST_HOSTNAME}"
+    return 0
+  fi
+  if [[ -n "${HOSTNAME:-}" ]]; then
+    printf '%s\n' "${HOSTNAME}"
+    return 0
+  fi
+  if command -v hostname >/dev/null 2>&1; then
+    hostname
+    return 0
+  fi
+  return 1
+}
+
+extract_hostname_prefix() {
+  local hostname_value="$1"
+  printf '%s\n' "${hostname_value}" | awk -F- '{print toupper($1)}'
+}
+
+upsert_env_value() {
+  local key="$1"
+  local value="$2"
+  python3 - "${ENV_FILE}" "${key}" "${value}" <<'PY'
+import pathlib, sys
+env_path = pathlib.Path(sys.argv[1])
+target_key = sys.argv[2]
+target_value = sys.argv[3]
+lines = env_path.read_text().splitlines()
+updated = False
+out = []
+for line in lines:
+    stripped = line.strip()
+    if stripped and not stripped.startswith("#") and "=" in line:
+        key, _ = line.split("=", 1)
+        if key.strip() == target_key:
+            out.append(f"{target_key}={target_value}")
+            updated = True
+            continue
+    out.append(line)
+if not updated:
+    if out and out[-1] != "":
+        out.append("")
+    out.append(f"{target_key}={target_value}")
+env_path.write_text("\n".join(out) + "\n")
+PY
+}
+
+resolve_region_by_prefix() {
+  local prefix="$1"
+  [[ -f "${REGION_MAPPING_FILE}" ]] || return 1
+
+  awk -v prefix="${prefix}" '
+    $1 == "prefix_map:" { in_map = 1; next }
+    in_map && $0 ~ /^  [A-Z0-9]+:$/ {
+      if (entry == prefix && region != "") {
+        print region
+        exit
+      }
+      entry = $1
+      sub(/:$/, "", entry)
+      region = ""
+      next
+    }
+    in_map && entry == prefix && $1 == "axis_region:" {
+      region = $2
+      next
+    }
+    END {
+      if (entry == prefix && region != "") {
+        print region
+      }
+    }
+  ' "${REGION_MAPPING_FILE}"
+}
+
+sync_local_region_from_mapping() {
+  local hostname_value prefix region
+
+  if [[ ! -f "${REGION_MAPPING_FILE}" ]]; then
+    echo -e "${BLUE}Region mapping file not found; keeping existing AXIS_LOCAL_REGION in .env.${NC}"
+    return 0
+  fi
+
+  hostname_value="$(resolve_node_hostname || true)"
+  if [[ -z "${hostname_value}" ]]; then
+    echo -e "${YELLOW}Hostname not resolved; keeping existing AXIS_LOCAL_REGION in .env.${NC}"
+    return 0
+  fi
+
+  prefix="$(extract_hostname_prefix "${hostname_value}")"
+  if [[ -z "${prefix}" ]]; then
+    echo -e "${YELLOW}Hostname prefix is empty for ${hostname_value}; keeping existing AXIS_LOCAL_REGION in .env.${NC}"
+    return 0
+  fi
+
+  region="$(resolve_region_by_prefix "${prefix}" || true)"
+  if [[ -z "${region}" || "${region}" == "null" ]]; then
+    echo -e "${YELLOW}No region mapping found for hostname prefix ${prefix}; keeping existing AXIS_LOCAL_REGION in .env.${NC}"
+    return 0
+  fi
+
+  echo -e "${YELLOW}Resolved hostname prefix:${NC} ${prefix} (hostname: ${hostname_value})"
+  echo -e "${YELLOW}Updating AXIS_LOCAL_REGION in .env to:${NC} ${region}"
+  upsert_env_value "AXIS_LOCAL_REGION" "${region}"
+}
+
 echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}        Axis Update Installer           ${NC}"
 echo -e "${CYAN}========================================${NC}"
 
 echo -e "${BLUE}Project root:${NC} ${PROJECT_ROOT}"
+
+sync_local_region_from_mapping
 
 if ! command -v go >/dev/null 2>&1; then
   echo -e "${RED}Error:${NC} Go toolchain not found in PATH."
