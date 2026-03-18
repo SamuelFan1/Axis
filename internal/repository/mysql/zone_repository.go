@@ -138,14 +138,9 @@ SELECT
     z.uuid,
     z.region_uuid,
     COALESCE(r.name, '') AS region_name,
-    z.name,
-    COUNT(n.uuid) AS total,
-    COALESCE(SUM(CASE WHEN n.status = 'up' THEN 1 ELSE 0 END), 0) AS up_count,
-    COALESCE(SUM(CASE WHEN n.status = 'down' THEN 1 ELSE 0 END), 0) AS down_count
+    z.name
 FROM zones z
 LEFT JOIN regions r ON z.region_uuid = r.uuid
-LEFT JOIN managed_nodes n ON z.uuid = n.zone_uuid
-GROUP BY z.uuid, z.region_uuid, r.name, z.name
 ORDER BY r.name ASC, z.name ASC`
 
 	rows, err := r.db.QueryContext(ctx, query)
@@ -157,7 +152,7 @@ ORDER BY r.name ASC, z.name ASC`
 	var items []zone.ZoneListItem
 	for rows.Next() {
 		var item zone.ZoneListItem
-		if err := rows.Scan(&item.UUID, &item.RegionUUID, &item.RegionName, &item.Name, &item.Total, &item.UpCount, &item.DownCount); err != nil {
+		if err := rows.Scan(&item.UUID, &item.RegionUUID, &item.RegionName, &item.Name); err != nil {
 			return nil, fmt.Errorf("scan zone: %w", err)
 		}
 		items = append(items, item)

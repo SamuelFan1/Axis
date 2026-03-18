@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SamuelFan1/Axis/internal/config"
+	"github.com/SamuelFan1/Axis/internal/domain/node"
 	"github.com/SamuelFan1/Axis/internal/domain/zone"
 	"github.com/SamuelFan1/Axis/internal/repository"
 	"github.com/google/uuid"
@@ -14,13 +15,15 @@ import (
 type ZoneService struct {
 	zoneRepo   repository.ZoneRepository
 	regionRepo repository.RegionRepository
+	nodeRepo   repository.NodeRepository
 	config     config.RegionConfig
 }
 
-func NewZoneService(zoneRepo repository.ZoneRepository, regionRepo repository.RegionRepository, cfg config.RegionConfig) *ZoneService {
+func NewZoneService(zoneRepo repository.ZoneRepository, regionRepo repository.RegionRepository, nodeRepo repository.NodeRepository, cfg config.RegionConfig) *ZoneService {
 	return &ZoneService{
 		zoneRepo:   zoneRepo,
 		regionRepo: regionRepo,
+		nodeRepo:   nodeRepo,
 		config:     cfg,
 	}
 }
@@ -81,7 +84,28 @@ func (s *ZoneService) EnsureConfigured(ctx context.Context) error {
 }
 
 func (s *ZoneService) List(ctx context.Context) ([]zone.ZoneListItem, error) {
-	return s.zoneRepo.List(ctx)
+	items, err := s.zoneRepo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaries, err := s.nodeRepo.ListRegionZones(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaryMap := make(map[string]node.RegionZoneSummary, len(summaries))
+	for _, summary := range summaries {
+		key := summary.Region + "\x00" + summary.Zone
+		summaryMap[key] = summary
+	}
+	for i := range items {
+		key := items[i].RegionName + "\x00" + items[i].Name
+		if summary, ok := summaryMap[key]; ok {
+			items[i].Total = summary.Total
+			items[i].UpCount = summary.UpCount
+			items[i].DownCount = summary.DownCount
+		}
+	}
+	return items, nil
 }
 
 func (s *ZoneService) DeleteByUUID(ctx context.Context, zoneUUID string) error {
@@ -92,7 +116,7 @@ func (s *ZoneService) DeleteByUUID(ctx context.Context, zoneUUID string) error {
 	if _, err := uuid.Parse(zoneUUID); err != nil {
 		return fmt.Errorf("invalid zone uuid")
 	}
-	if _, err := s.zoneRepo.DeleteNodesByZoneUUID(ctx, zoneUUID); err != nil {
+	if _, err := s.nodeRepo.DeleteByZoneUUID(ctx, zoneUUID); err != nil {
 		return fmt.Errorf("delete nodes by zone: %w", err)
 	}
 	deleted, err := s.zoneRepo.DeleteByUUID(ctx, zoneUUID)

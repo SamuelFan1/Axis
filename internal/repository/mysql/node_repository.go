@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,11 +13,15 @@ import (
 )
 
 type NodeRepository struct {
-	db *sql.DB
+	db          *sql.DB
+	metricsRepo *NodeMetricsRepository
 }
 
 func NewNodeRepository(db *sql.DB) *NodeRepository {
-	return &NodeRepository{db: db}
+	return &NodeRepository{
+		db:          db,
+		metricsRepo: NewNodeMetricsRepository(db),
+	}
 }
 
 func (r *NodeRepository) EnsureSchema(ctx context.Context) error {
@@ -34,17 +37,6 @@ CREATE TABLE IF NOT EXISTS managed_nodes (
     region VARCHAR(64) NOT NULL,
     zone VARCHAR(16) NOT NULL DEFAULT '',
     status VARCHAR(16) NOT NULL,
-    cpu_cores INT NOT NULL DEFAULT 0,
-    cpu_usage_percent DOUBLE NOT NULL DEFAULT 0,
-    memory_total_gb DOUBLE NOT NULL DEFAULT 0,
-    memory_used_gb DOUBLE NOT NULL DEFAULT 0,
-    memory_usage_percent DOUBLE NOT NULL DEFAULT 0,
-    swap_total_gb DOUBLE NOT NULL DEFAULT 0,
-    swap_used_gb DOUBLE NOT NULL DEFAULT 0,
-    swap_usage_percent DOUBLE NOT NULL DEFAULT 0,
-    disk_usage_percent DOUBLE NOT NULL DEFAULT 0,
-    disk_details JSON NULL,
-    monitoring_snapshot JSON NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     last_seen_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -100,22 +92,11 @@ CREATE TABLE IF NOT EXISTS managed_nodes_history (
 		return fmt.Errorf("create managed_nodes_history table: %w", err)
 	}
 	for _, stmt := range []string{
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS cpu_usage_percent DOUBLE NOT NULL DEFAULT 0`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_usage_percent DOUBLE NOT NULL DEFAULT 0`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS disk_usage_percent DOUBLE NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS last_reported_at DATETIME(6) NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS internal_ip VARCHAR(64) DEFAULT ''`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS public_ip VARCHAR(64) DEFAULT ''`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS dns_label VARCHAR(64) NULL DEFAULT NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS dns_name VARCHAR(255) NULL DEFAULT NULL`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS cpu_cores INT NOT NULL DEFAULT 0`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_total_gb DOUBLE NOT NULL DEFAULT 0`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS memory_used_gb DOUBLE NOT NULL DEFAULT 0`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_total_gb DOUBLE NOT NULL DEFAULT 0`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_used_gb DOUBLE NOT NULL DEFAULT 0`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS swap_usage_percent DOUBLE NOT NULL DEFAULT 0`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS disk_details JSON NULL`,
-		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS monitoring_snapshot JSON NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone VARCHAR(16) NOT NULL DEFAULT ''`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS region_uuid VARCHAR(36) NULL DEFAULT NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone_uuid VARCHAR(36) NULL DEFAULT NULL`,
@@ -160,6 +141,9 @@ CREATE TABLE IF NOT EXISTS managed_nodes_history (
 	if err := ensureIndex(ctx, r.db, "managed_nodes", "idx_zone_uuid", "zone_uuid"); err != nil {
 		return err
 	}
+	if err := r.metricsRepo.EnsureSchema(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -176,17 +160,6 @@ const selectNodeColumns = `
     zone,
     zone_uuid,
     status,
-    cpu_cores,
-    cpu_usage_percent,
-    memory_total_gb,
-    memory_used_gb,
-    memory_usage_percent,
-    swap_total_gb,
-    swap_used_gb,
-    swap_usage_percent,
-    disk_usage_percent,
-    disk_details,
-    monitoring_snapshot,
     created_at,
     updated_at,
     last_seen_at,
@@ -210,7 +183,9 @@ LIMIT 1`
 	if err != nil {
 		return nil, fmt.Errorf("find active managed node by management address: %w", err)
 	}
-
+	if err := r.attachMetrics(ctx, &item); err != nil {
+		return nil, err
+	}
 	return &item, nil
 }
 
@@ -228,7 +203,9 @@ LIMIT 1`
 	if err != nil {
 		return nil, fmt.Errorf("find managed node by uuid: %w", err)
 	}
-
+	if err := r.attachMetrics(ctx, &item); err != nil {
+		return nil, err
+	}
 	return &item, nil
 }
 
@@ -237,21 +214,20 @@ func (r *NodeRepository) Upsert(ctx context.Context, item node.Node) error {
 	// while region_uuid/zone_uuid act as relational anchors to static master data.
 	const query = `
 INSERT INTO managed_nodes (
-    uuid, hostname, management_address, region, region_uuid, zone, zone_uuid, status, cpu_usage_percent, memory_usage_percent, disk_usage_percent, created_at, updated_at, last_seen_at, last_reported_at
+    uuid, hostname, management_address, internal_ip, public_ip, region, region_uuid, zone, zone_uuid, status, created_at, updated_at, last_seen_at, last_reported_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?
 )
 ON DUPLICATE KEY UPDATE
     hostname = VALUES(hostname),
     management_address = VALUES(management_address),
+    internal_ip = VALUES(internal_ip),
+    public_ip = VALUES(public_ip),
     region = VALUES(region),
     region_uuid = VALUES(region_uuid),
     zone = VALUES(zone),
     zone_uuid = VALUES(zone_uuid),
     status = VALUES(status),
-    cpu_usage_percent = VALUES(cpu_usage_percent),
-    memory_usage_percent = VALUES(memory_usage_percent),
-    disk_usage_percent = VALUES(disk_usage_percent),
     updated_at = CURRENT_TIMESTAMP(6),
     last_seen_at = CURRENT_TIMESTAMP(6),
     last_reported_at = VALUES(last_reported_at)`
@@ -262,14 +238,13 @@ ON DUPLICATE KEY UPDATE
 		item.UUID,
 		item.Hostname,
 		item.ManagementAddress,
+		item.InternalIP,
+		item.PublicIP,
 		item.Region,
 		nullString(item.RegionUUID),
 		item.Zone,
 		nullString(item.ZoneUUID),
 		item.Status,
-		item.CPUUsagePercent,
-		item.MemoryUsagePercent,
-		item.DiskUsagePercent,
 		nullTime(item.LastReportedAt),
 	); err != nil {
 		return fmt.Errorf("upsert managed node: %w", err)
@@ -278,8 +253,6 @@ ON DUPLICATE KEY UPDATE
 }
 
 func (r *NodeRepository) UpdateHeartbeat(ctx context.Context, item node.Node) error {
-	diskDetailsJSON := marshalDiskDetails(item.DiskDetails)
-	monitoringSnapshotJSON := marshalRawJSON(item.MonitoringSnapshot)
 	// dns_label/dns_name remain display mirrors on managed_nodes. The authoritative
 	// DNS mapping lives in dns_bindings and is only mirrored back after successful
 	// binding updates.
@@ -295,17 +268,6 @@ SET
     zone = ?,
     zone_uuid = ?,
     status = ?,
-    cpu_cores = ?,
-    cpu_usage_percent = ?,
-    memory_total_gb = ?,
-    memory_used_gb = ?,
-    memory_usage_percent = ?,
-    swap_total_gb = ?,
-    swap_used_gb = ?,
-    swap_usage_percent = ?,
-    disk_usage_percent = ?,
-    disk_details = ?,
-    monitoring_snapshot = ?,
     updated_at = CURRENT_TIMESTAMP(6),
     last_seen_at = CURRENT_TIMESTAMP(6),
     last_reported_at = CURRENT_TIMESTAMP(6)
@@ -323,17 +285,6 @@ WHERE uuid = ?`
 		item.Zone,
 		nullString(item.ZoneUUID),
 		item.Status,
-		item.CPUCores,
-		item.CPUUsagePercent,
-		item.MemoryTotalGB,
-		item.MemoryUsedGB,
-		item.MemoryUsagePercent,
-		item.SwapTotalGB,
-		item.SwapUsedGB,
-		item.SwapUsagePercent,
-		item.DiskUsagePercent,
-		diskDetailsJSON,
-		monitoringSnapshotJSON,
 		item.UUID,
 	)
 	if err != nil {
@@ -346,6 +297,9 @@ WHERE uuid = ?`
 	}
 	if rowsAffected == 0 {
 		return sql.ErrNoRows
+	}
+	if err := r.metricsRepo.Upsert(ctx, item); err != nil {
+		return err
 	}
 	return nil
 }
@@ -419,14 +373,17 @@ func (r *NodeRepository) ArchiveAndDeleteByManagementAddress(ctx context.Context
 		     archive_reason, replaced_by_uuid
 		 )
 		 SELECT
-		     uuid, hostname, management_address, internal_ip, public_ip, dns_label, dns_name,
-		     region, region_uuid, zone, zone_uuid, status, cpu_cores, cpu_usage_percent,
-		     memory_total_gb, memory_used_gb, memory_usage_percent, swap_total_gb, swap_used_gb,
-		     swap_usage_percent, disk_usage_percent, disk_details, monitoring_snapshot,
-		     created_at, updated_at, last_seen_at, last_reported_at, CURRENT_TIMESTAMP(6),
+		     n.uuid, n.hostname, n.management_address, n.internal_ip, n.public_ip, n.dns_label, n.dns_name,
+		     n.region, n.region_uuid, n.zone, n.zone_uuid, n.status,
+		     COALESCE(m.cpu_cores, 0), COALESCE(m.cpu_usage_percent, 0),
+		     COALESCE(m.memory_total_gb, 0), COALESCE(m.memory_used_gb, 0), COALESCE(m.memory_usage_percent, 0),
+		     COALESCE(m.swap_total_gb, 0), COALESCE(m.swap_used_gb, 0), COALESCE(m.swap_usage_percent, 0),
+		     COALESCE(m.disk_usage_percent, 0), m.disk_details, m.monitoring_snapshot,
+		     n.created_at, n.updated_at, n.last_seen_at, n.last_reported_at, CURRENT_TIMESTAMP(6),
 		     ?, NULLIF(?, '')
-		 FROM managed_nodes
-		 WHERE management_address = ?`,
+		 FROM managed_nodes n
+		 LEFT JOIN managed_node_metrics_ext m ON m.node_uuid = n.uuid
+		 WHERE n.management_address = ?`,
 		reason,
 		replacedByUUID,
 		managementAddress,
@@ -447,6 +404,9 @@ func (r *NodeRepository) ArchiveAndDeleteByManagementAddress(ctx context.Context
 		return nil
 	}
 
+	if _, err := tx.ExecContext(ctx, `DELETE m FROM managed_node_metrics_ext m INNER JOIN managed_nodes n ON n.uuid = m.node_uuid WHERE n.management_address = ?`, managementAddress); err != nil {
+		return fmt.Errorf("delete managed node metrics by management address: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM managed_nodes WHERE management_address = ?`, managementAddress); err != nil {
 		return fmt.Errorf("delete managed node by management address: %w", err)
 	}
@@ -481,11 +441,16 @@ ORDER BY region ASC, zone ASC, hostname ASC, uuid ASC`
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate managed nodes: %w", err)
 	}
-
+	if err := r.attachMetricsBatch(ctx, items); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
 func (r *NodeRepository) DeleteByUUID(ctx context.Context, uuid string) (bool, error) {
+	if err := r.metricsRepo.DeleteByNodeUUID(ctx, uuid); err != nil {
+		return false, err
+	}
 	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE uuid = ?`, uuid)
 	if err != nil {
 		return false, fmt.Errorf("delete managed node: %w", err)
@@ -495,6 +460,28 @@ func (r *NodeRepository) DeleteByUUID(ctx context.Context, uuid string) (bool, e
 		return false, fmt.Errorf("delete managed node rows affected: %w", err)
 	}
 	return rowsAffected > 0, nil
+}
+
+func (r *NodeRepository) DeleteByRegionUUID(ctx context.Context, regionUUID string) (int64, error) {
+	if err := r.metricsRepo.DeleteByRegionUUID(ctx, regionUUID); err != nil {
+		return 0, err
+	}
+	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE region_uuid = ?`, regionUUID)
+	if err != nil {
+		return 0, fmt.Errorf("delete managed nodes by region uuid: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+func (r *NodeRepository) DeleteByZoneUUID(ctx context.Context, zoneUUID string) (int64, error) {
+	if err := r.metricsRepo.DeleteByZoneUUID(ctx, zoneUUID); err != nil {
+		return 0, err
+	}
+	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE zone_uuid = ?`, zoneUUID)
+	if err != nil {
+		return 0, fmt.Errorf("delete managed nodes by zone uuid: %w", err)
+	}
+	return result.RowsAffected()
 }
 
 func (r *NodeRepository) UpdateStatus(ctx context.Context, uuid string, status string) (bool, error) {
@@ -639,8 +626,6 @@ func scanNode(src scanner, item *node.Node) error {
 	var dnsName sql.NullString
 	var regionUUID sql.NullString
 	var zoneUUID sql.NullString
-	var diskDetailsRaw []byte
-	var monitoringSnapshotRaw []byte
 	if err := src.Scan(
 		&item.UUID,
 		&item.Hostname,
@@ -654,17 +639,6 @@ func scanNode(src scanner, item *node.Node) error {
 		&item.Zone,
 		&zoneUUID,
 		&item.Status,
-		&item.CPUCores,
-		&item.CPUUsagePercent,
-		&item.MemoryTotalGB,
-		&item.MemoryUsedGB,
-		&item.MemoryUsagePercent,
-		&item.SwapTotalGB,
-		&item.SwapUsedGB,
-		&item.SwapUsagePercent,
-		&item.DiskUsagePercent,
-		&diskDetailsRaw,
-		&monitoringSnapshotRaw,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 		&item.LastSeenAt,
@@ -687,31 +661,57 @@ func scanNode(src scanner, item *node.Node) error {
 	if zoneUUID.Valid {
 		item.ZoneUUID = zoneUUID.String
 	}
-	if len(diskDetailsRaw) > 0 {
-		_ = json.Unmarshal(diskDetailsRaw, &item.DiskDetails)
+	return nil
+}
+
+func (r *NodeRepository) attachMetrics(ctx context.Context, item *node.Node) error {
+	if item == nil || item.UUID == "" {
+		return nil
 	}
-	if len(monitoringSnapshotRaw) > 0 {
-		item.MonitoringSnapshot = append(item.MonitoringSnapshot[:0], monitoringSnapshotRaw...)
+	metricsByNode, err := r.metricsRepo.LoadByNodeUUIDs(ctx, []string{item.UUID})
+	if err != nil {
+		return err
+	}
+	if metrics, ok := metricsByNode[item.UUID]; ok {
+		applyNodeMetrics(item, metrics)
 	}
 	return nil
 }
 
-func marshalDiskDetails(details []node.DiskDetail) interface{} {
-	if len(details) == 0 {
+func (r *NodeRepository) attachMetricsBatch(ctx context.Context, items []node.Node) error {
+	if len(items) == 0 {
 		return nil
 	}
-	b, err := json.Marshal(details)
+	uuids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.UUID != "" {
+			uuids = append(uuids, item.UUID)
+		}
+	}
+	metricsByNode, err := r.metricsRepo.LoadByNodeUUIDs(ctx, uuids)
 	if err != nil {
-		return nil
+		return err
 	}
-	return b
+	for i := range items {
+		if metrics, ok := metricsByNode[items[i].UUID]; ok {
+			applyNodeMetrics(&items[i], metrics)
+		}
+	}
+	return nil
 }
 
-func marshalRawJSON(raw json.RawMessage) interface{} {
-	if len(raw) == 0 {
-		return nil
-	}
-	return []byte(raw)
+func applyNodeMetrics(target *node.Node, metrics node.Node) {
+	target.CPUCores = metrics.CPUCores
+	target.CPUUsagePercent = metrics.CPUUsagePercent
+	target.MemoryTotalGB = metrics.MemoryTotalGB
+	target.MemoryUsedGB = metrics.MemoryUsedGB
+	target.MemoryUsagePercent = metrics.MemoryUsagePercent
+	target.SwapTotalGB = metrics.SwapTotalGB
+	target.SwapUsedGB = metrics.SwapUsedGB
+	target.SwapUsagePercent = metrics.SwapUsagePercent
+	target.DiskUsagePercent = metrics.DiskUsagePercent
+	target.DiskDetails = metrics.DiskDetails
+	target.MonitoringSnapshot = metrics.MonitoringSnapshot
 }
 
 func ensureUniqueIndex(ctx context.Context, db *sql.DB, tableName, indexName, columnName string) error {

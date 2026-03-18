@@ -5,29 +5,57 @@
 `Axis` 是控制平面，不是网盘业务库。  
 它的表不能一刀切地都按“全局强一致业务真相”处理，而应按真实数据性质分层：
 
-- 静态主数据：`regions`、`zones`
-- 全局单权威分配/生成表：`dns_bindings`、`dns_binding_counters`、`routing_snapshot_*`
-- 区域运行态/热写表：`managed_nodes`、`managed_nodes_history`、`routing_observations`
+- `AxisCore`：静态主数据与全局唯一分配表
+- `AxisRuntime`：区域本地热写与节点运行态
+- `AxisDerived`：单点生成、全区复制的派生产物
+
+## 目标数据平面
+
+```mermaid
+flowchart TD
+    subgraph axisCore [AxisCore]
+        regions[regions]
+        zones[zones]
+        dnsBindings[dns_bindings]
+        dnsCounters[dns_binding_counters]
+    end
+
+    subgraph axisRuntime [AxisRuntime]
+        managedNodes[managed_nodes]
+        managedNodesHistory[managed_nodes_history]
+        routingObservations[routing_observations]
+        managedNodeMetricsExt[managed_node_metrics_ext]
+    end
+
+    subgraph axisDerived [AxisDerived]
+        routingSnapshotManifests[routing_snapshot_manifests]
+        routingSnapshotBundles[routing_snapshot_bundles]
+    end
+
+    axisCore -->|"relation anchors"| axisRuntime
+    axisRuntime -->|"node state + observations"| axisDerived
+    axisCore -->|"authority data"| axisDerived
+```
 
 ## 表分层结论
 
-| 表名 | 数据性质 | 最终建议策略 |
-| --- | --- | --- |
-| `managed_nodes` | 区域运行态 | 区域本地化 |
-| `managed_nodes_history` | 区域运行态历史 | 区域本地化 |
-| `dns_bindings` | 全局命名权威表 | 单权威生成+复制 |
-| `dns_binding_counters` | 全局序号分配器 | 单权威生成+复制 |
-| `regions` | 静态主数据 | 全局静态同步 |
-| `zones` | 静态主数据 | 全局静态同步 |
-| `routing_observations` | 区域观测累加表 | 区域本地化 |
-| `routing_snapshot_manifests` | 单权威派生产物 | 单权威生成+复制 |
-| `routing_snapshot_bundles` | 单权威派生产物 | 单权威生成+复制 |
+| 表名 | 逻辑组 | 数据性质 | 最终建议策略 |
+| --- | --- | --- | --- |
+| `regions` | `AxisCore` | 静态主数据 | 亚洲权威写 + 全局静态同步 |
+| `zones` | `AxisCore` | 静态主数据 | 亚洲权威写 + 全局静态同步 |
+| `dns_bindings` | `AxisCore` | 全局命名权威表 | 亚洲权威写 + 单向复制 |
+| `dns_binding_counters` | `AxisCore` | 全局序号分配器 | 亚洲权威写 + 单向复制 |
+| `managed_nodes` | `AxisRuntime` | 区域运行态 | 区域本地化 |
+| `managed_nodes_history` | `AxisRuntime` | 区域运行态历史 | 区域本地化 |
+| `routing_observations` | `AxisRuntime` | 区域观测累加表 | 区域本地化 |
+| `routing_snapshot_manifests` | `AxisDerived` | 单权威派生产物 | 亚洲单点生成 + 全区复制 |
+| `routing_snapshot_bundles` | `AxisDerived` | 单权威派生产物 | 亚洲单点生成 + 全区复制 |
 
 ---
 
 ## `managed_nodes`
 
-- 表功能：活动节点主表，保存节点身份、区域、状态、资源指标、监控快照、DNS 镜像。
+- 表功能：活动节点主表，保存节点身份、运行态资源指标、调度热路径读模型，以及与静态主数据关联的 UUID 锚点。
 - 主键 / 关键唯一约束：
   - 主键：`uuid`
   - 唯一约束：`management_address`、`dns_label`、`dns_name`
@@ -40,20 +68,42 @@
 - 容易遗漏的自动维护链路：
   - `axis-node` 周期心跳会持续覆盖 `cpu_usage_percent`、`memory_used_gb`、`monitoring_snapshot`
   - `NodeMonitor` 会自动更新 `status`
-  - 启动期只有在显式开启 `AXIS_AUTO_SCHEMA_UPGRADE` 时，才允许执行一次性 `region_uuid/zone_uuid` 迁移补写
+  - `region` / `zone` 是调度与路由热路径使用的文本读模型
+  - `region_uuid` / `zone_uuid` 是静态主数据关系锚点
+  - `dns_label` / `dns_name` 是显示镜像，权威绑定关系在 `dns_bindings`
 - 数据性质：区域运行态热表
 - 最终建议策略：`区域本地化`
 - 理由：这张表的差异天然表现为同一 `uuid` 的实时状态不同，不适合要求多区长期字节级一致。更合理的是本区主写、全局只读汇总。
 
+### 字段拆分建议
+
+- 建议继续保留在主表：
+  - 节点身份：`uuid`、`hostname`、`management_address`
+  - 热路径读模型：`region`、`zone`
+  - 关系锚点：`region_uuid`、`zone_uuid`
+  - 关键状态：`status`
+  - DNS 显示镜像：`dns_label`、`dns_name`
+  - 轻量时间字段：`created_at`、`updated_at`、`last_seen_at`、`last_reported_at`
+- 建议优先评估拆到运行态扩展表：
+  - 大字段：`monitoring_snapshot`、`disk_details`
+  - 高频指标：`cpu_usage_percent`、`memory_total_gb`、`memory_used_gb`、`memory_usage_percent`
+  - 高频指标：`swap_total_gb`、`swap_used_gb`、`swap_usage_percent`、`disk_usage_percent`
+- 推荐扩展表方向：`managed_node_metrics_ext`
+- 理由：
+  - 这些字段由 `axis-node` 高频上报
+  - JSON 和多组资源指标会放大 TiCDC 复制成本与主表写放大
+  - 调度热路径并不需要每次都读取完整监控快照
+
 ## `managed_nodes_history`
 
-- 表功能：活动节点被新 UUID 替换时的归档历史表。
+- 表功能：活动节点被新 UUID 替换时的归档历史表，保存被替换节点的完整运行态快照。
 - 主键 / 关键唯一约束：
   - 主键：`history_id`
 - 主要写入来源：
   - `Register()` 命中新旧 UUID 冲突时，归档旧 active 节点
 - 容易遗漏的自动维护链路：
   - 只有“同 `management_address` 被新 UUID 替换”才写，不是全量审计表
+  - 归档内容包含 `region/region_uuid`、`zone/zone_uuid`、`dns_*`、资源指标、监控快照、`archive_reason`、`replaced_by_uuid`
 - 数据性质：区域运行态历史表
 - 最终建议策略：`区域本地化`
 - 理由：它依附 `managed_nodes` 生命周期，属于节点归属区的历史，不需要做全局强一致主写。
@@ -82,9 +132,10 @@
   - 主键：`zone, record_prefix`
 - 主要写入来源：
   - `AllocateForNode()` 事务内推进序号
-  - 一次性迁移 / 修复场景下的 `EnsureCounterFloor()`
+  - `EnsureCounterFloor()` 校正最小可分配序号
 - 容易遗漏的自动维护链路：
   - 它和 `dns_bindings` 是成对工作的，全局唯一语义比普通表更强
+  - 物理字段语义是 `next_sequence`，表示下一次应分配的序号，而不是已分配的最后一个序号
 - 数据性质：全局序号分配器
 - 最终建议策略：`单权威生成+复制`
 - 理由：这是典型单调计数器，多区同时写会天然冲突。
@@ -106,7 +157,7 @@
 
 ## `zones`
 
-- 表功能：可用区主数据表，当前已显式从属于 `regions`。
+- 表功能：可用区主数据表，显式从属于 `regions`。
 - 主键 / 关键唯一约束：
   - 主键：`uuid`
   - 关键字段：`region_uuid`、`name`
@@ -116,7 +167,8 @@
   - CLI `zone-create --region-uuid`
 - 容易遗漏的自动维护链路：
   - `AXIS_AUTO_SCHEMA_UPGRADE` 开启时，会优先按配置补齐 `regions/zones`
-  - 旧的“只有 `name` 没有 `region_uuid`”结构会被兼容迁移到新的从属关系
+  - `RegionService.DeleteByUUID()` 会先检查该 `region` 下是否仍有 `zones`
+  - `ZoneService.DeleteByUUID()` 删除 zone 时会先清理该 `zone_uuid` 下的活动节点
 - 数据性质：静态主数据
 - 最终建议策略：`全局静态同步`
 - 理由：和 `regions` 一样是低频静态字典，应一次创建、全局同步；但 zone 不再是全局唯一名，而是区域内唯一名。
@@ -145,7 +197,8 @@
   - 后台 `RoutingSnapshotPublisher`
   - 管理接口 `POST /api/v1/routing/snapshots/generate`
 - 容易遗漏的自动维护链路：
-  - worker 启动后立即跑一次，然后按周期持续生成新版本
+  - 只有在启用 publisher 时，后台发布 worker 才会启动并周期生成新版本
+  - 快照输入来自当前 `managed_nodes` 的文本 `region/zone` 读模型与 `routing_observations`
   - 代码里没有自动清理过期快照
 - 数据性质：单权威派生产物
 - 最终建议策略：`单权威生成+复制`
@@ -160,17 +213,78 @@
   - `GenerateAndStore()` 与 `routing_snapshot_manifests` 同批生成
 - 容易遗漏的自动维护链路：
   - 它与 manifest 必须成对看，不能单独作为运行态表理解
+  - 每个 bundle 的候选集同样依赖当前 `managed_nodes` 与 `routing_observations` 的组合输入
 - 数据性质：单权威派生产物
 - 最终建议策略：`单权威生成+复制`
 - 理由：和 manifest 一样，应由单点生成，再向各区只读扩散。
 
 ---
 
+## 逻辑数据库边界
+
+### `AxisCore`
+
+- 包含：`regions`、`zones`、`dns_bindings`、`dns_binding_counters`
+- 角色：亚洲权威真相层
+- 特征：
+  - 低频主数据
+  - 全局唯一命名 / 序号分配
+  - 不适合多区平级主写
+
+### `AxisRuntime`
+
+- 包含：`managed_nodes`、`managed_nodes_history`、`routing_observations`
+- 可扩展：`managed_node_metrics_ext`
+- 角色：区域本地运行态层
+- 特征：
+  - 高频热写
+  - 允许天然地域差异
+  - 不应再纳入全区严格字节级一致性考核
+
+### `AxisDerived`
+
+- 包含：`routing_snapshot_manifests`、`routing_snapshot_bundles`
+- 角色：亚洲单点生成派生层
+- 特征：
+  - 输入依赖 `AxisCore + AxisRuntime`
+  - 产物适合全区只读消费
+  - 不适合多 publisher 并发生成
+
+---
+
+## TiDB 承载建议
+
+### TiCDC
+
+- 不再继续使用单一 `AXIS.*` 整库复制语义
+- 建议升级为按逻辑组复制：
+  - `AxisCore`：亚洲单向复制到北美/澳洲/欧洲
+  - `AxisRuntime`：区域本地化，不参与全区严格互联
+  - `AxisDerived`：亚洲单向复制到北美/澳洲/欧洲
+- DDL 仍应保持手工前置对齐，不依赖 TiCDC 传播
+
+### HAProxy
+
+- 不做 SQL 级按表判断
+- 应提供两个明确入口：
+  - `regional_tidb`：区域本地运行态入口
+  - `asia_authoritative_tidb`：亚洲权威入口
+- 上层服务按业务语义选择入口，而不是让代理层猜测访问哪类表
+
+### 应用侧
+
+- `Axis` 后续应明确区分：
+  - 主数据 / 命名权威访问走亚洲权威入口
+  - 节点心跳 / 观测写入走区域入口
+  - 快照生成只在亚洲权威实例执行
+
+---
+
 ## 总结
 
-`Axis` 不适合继续按 `AXIS.*` 整库一刀切地做全区多主热写。更合理的最终形态是：
+`Axis` 不适合继续按 `AXIS.*` 整库一刀切地做全区多主热写。更合理的目标形态是：
 
-- `regions`、`zones`：静态主数据，单点创建后全局静态同步
-- `dns_bindings`、`dns_binding_counters`、`routing_snapshot_*`：单权威生成/写入，再向其他区复制
-- `managed_nodes`、`managed_nodes_history`、`routing_observations`：区域运行态，本地化写入更自然
-- `managed_nodes` 上的 `dns_*`、`region_uuid`、`zone_uuid` 只是镜像/补全字段，不再作为持续性反向回灌主真相的来源
+- `AxisCore`：亚洲权威写，负责静态主数据和全局唯一分配
+- `AxisRuntime`：区域本地化，负责节点运行态与观测累加
+- `AxisDerived`：亚洲单点生成，再向其他区复制
+- `managed_nodes` 主表只保留调度热路径需要的轻量字段；高频大字段应优先评估拆出到运行态扩展表

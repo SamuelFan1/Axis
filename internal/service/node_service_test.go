@@ -145,6 +145,14 @@ func (r *stubNodeRepository) DeleteByUUID(ctx context.Context, uuid string) (boo
 	return false, nil
 }
 
+func (r *stubNodeRepository) DeleteByRegionUUID(ctx context.Context, regionUUID string) (int64, error) {
+	return 0, nil
+}
+
+func (r *stubNodeRepository) DeleteByZoneUUID(ctx context.Context, zoneUUID string) (int64, error) {
+	return 0, nil
+}
+
 func (r *stubNodeRepository) UpdateStatus(ctx context.Context, uuid string, status string) (bool, error) {
 	return false, nil
 }

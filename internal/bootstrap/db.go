@@ -34,3 +34,47 @@ func OpenDB(cfg config.DBConfig) (*sql.DB, error) {
 
 	return db, nil
 }
+
+type DBSet struct {
+	Core    *sql.DB
+	Runtime *sql.DB
+	Derived *sql.DB
+}
+
+func OpenDBSet(cfg *config.Config) (*DBSet, error) {
+	coreDB, err := OpenDB(cfg.CoreDB)
+	if err != nil {
+		return nil, fmt.Errorf("open core db: %w", err)
+	}
+	runtimeDB, err := OpenDB(cfg.RuntimeDB)
+	if err != nil {
+		coreDB.Close()
+		return nil, fmt.Errorf("open runtime db: %w", err)
+	}
+	derivedDB, err := OpenDB(cfg.DerivedDB)
+	if err != nil {
+		coreDB.Close()
+		runtimeDB.Close()
+		return nil, fmt.Errorf("open derived db: %w", err)
+	}
+	return &DBSet{
+		Core:    coreDB,
+		Runtime: runtimeDB,
+		Derived: derivedDB,
+	}, nil
+}
+
+func (s *DBSet) Close() {
+	if s == nil {
+		return
+	}
+	if s.Core != nil {
+		_ = s.Core.Close()
+	}
+	if s.Runtime != nil {
+		_ = s.Runtime.Close()
+	}
+	if s.Derived != nil {
+		_ = s.Derived.Close()
+	}
+}

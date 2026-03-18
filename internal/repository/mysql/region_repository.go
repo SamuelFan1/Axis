@@ -55,9 +55,9 @@ func (r *RegionRepository) List(ctx context.Context) ([]region.RegionListItem, e
 SELECT
     r.uuid,
     r.name,
-    COUNT(DISTINCT CASE WHEN n.zone IS NOT NULL AND n.zone != '' THEN n.zone END) AS zone_num
+    COUNT(DISTINCT z.uuid) AS zone_num
 FROM regions r
-LEFT JOIN managed_nodes n ON r.uuid = n.region_uuid
+LEFT JOIN zones z ON r.uuid = z.region_uuid
 GROUP BY r.uuid, r.name
 ORDER BY r.name ASC`
 

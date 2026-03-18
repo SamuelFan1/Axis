@@ -20,24 +20,24 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	db, err := bootstrap.OpenDB(cfg.DB)
+	dbs, err := bootstrap.OpenDBSet(cfg)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer dbs.Close()
 
-	nodeRepo := mysql.NewNodeRepository(db)
-	regionRepo := mysql.NewRegionRepository(db)
-	zoneRepo := mysql.NewZoneRepository(db)
+	nodeRepo := mysql.NewNodeRepository(dbs.Runtime)
+	regionRepo := mysql.NewRegionRepository(dbs.Core)
+	zoneRepo := mysql.NewZoneRepository(dbs.Core)
 
 	dnsProvider := platformdns.NewNoopProvider()
 	var dnsBindingRepo *mysql.DNSBindingRepository
 	if cfg.DNS.Enabled && cfg.DNS.Provider == "cloudflare" {
 		dnsProvider = platformdns.NewCloudflareProvider(cfg.DNS)
-		dnsBindingRepo = mysql.NewDNSBindingRepository(db)
+		dnsBindingRepo = mysql.NewDNSBindingRepository(dbs.Core)
 	}
 	regionService := service.NewRegionService(regionRepo, nodeRepo, zoneRepo, cfg.Region)
-	zoneService := service.NewZoneService(zoneRepo, regionRepo, cfg.Region)
+	zoneService := service.NewZoneService(zoneRepo, regionRepo, nodeRepo, cfg.Region)
 	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region)
 	ctx := context.Background()
 	if cfg.App.AutoSchemaUpgrade {
@@ -92,8 +92,8 @@ func main() {
 
 	var routingHandler *httptransport.RoutingHandler
 	if cfg.Routing.Enabled {
-		observationRepo := mysql.NewObservationRepository(db)
-		snapshotRepo := mysql.NewRoutingSnapshotRepository(db)
+		observationRepo := mysql.NewObservationRepository(dbs.Runtime)
+		snapshotRepo := mysql.NewRoutingSnapshotRepository(dbs.Derived)
 
 		if cfg.App.AutoSchemaUpgrade {
 			if cfg.Routing.ObservationEnabled || cfg.Routing.SnapshotEnabled {
@@ -117,7 +117,7 @@ func main() {
 
 		var snapshotService *service.RoutingSnapshotService
 		if cfg.Routing.SnapshotEnabled {
-			snapshotService = service.NewRoutingSnapshotService(observationRepo, snapshotRepo, nodeRepo, cfg.Routing)
+			snapshotService = service.NewRoutingSnapshotService(observationRepo, snapshotRepo, nodeRepo, regionRepo, zoneRepo, cfg.Routing)
 		}
 
 		publisher := platformrouting.NewNoopPublisher()
@@ -129,7 +129,7 @@ func main() {
 		if observationService != nil || snapshotService != nil {
 			routingHandler = httptransport.NewRoutingHandler(observationService, snapshotService, publishService)
 		}
-		if snapshotService != nil && publishService.Enabled() {
+		if snapshotService != nil && publishService.Enabled() && cfg.Region.LocalRegion == cfg.App.AuthoritativeRegion {
 			routingPublisher := worker.NewRoutingSnapshotPublisher(
 				snapshotService,
 				publishService,

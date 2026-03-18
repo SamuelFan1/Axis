@@ -16,6 +16,8 @@ type NodeRepository interface {
 	ArchiveAndDeleteByManagementAddress(ctx context.Context, managementAddress string, replacedByUUID string, reason string) error
 	List(ctx context.Context) ([]node.Node, error)
 	DeleteByUUID(ctx context.Context, uuid string) (bool, error)
+	DeleteByRegionUUID(ctx context.Context, regionUUID string) (int64, error)
+	DeleteByZoneUUID(ctx context.Context, zoneUUID string) (int64, error)
 	UpdateStatus(ctx context.Context, uuid string, status string) (bool, error)
 	ListRegions(ctx context.Context) ([]node.RegionSummary, error)
 	ListRegionZones(ctx context.Context) ([]node.RegionZoneSummary, error)

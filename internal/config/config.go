@@ -9,12 +9,14 @@ import (
 )
 
 type Config struct {
-	App     AppConfig
-	Auth    AuthConfig
-	DB      DBConfig
-	DNS     DNSConfig
-	Routing RoutingConfig
-	Region  RegionConfig
+	App      AppConfig
+	Auth     AuthConfig
+	CoreDB   DBConfig
+	RuntimeDB DBConfig
+	DerivedDB DBConfig
+	DNS      DNSConfig
+	Routing  RoutingConfig
+	Region   RegionConfig
 }
 
 type RegionConfig struct {
@@ -35,6 +37,7 @@ type AppConfig struct {
 	NodeTimeoutSec         int
 	NodeMonitorIntervalSec int
 	AutoSchemaUpgrade      bool
+	AuthoritativeRegion    string
 }
 
 type AuthConfig struct {
@@ -90,6 +93,7 @@ func Load() (*Config, error) {
 			NodeTimeoutSec:         getEnvInt("AXIS_NODE_TIMEOUT_SEC", 30),
 			NodeMonitorIntervalSec: getEnvInt("AXIS_NODE_MONITOR_INTERVAL_SEC", 5),
 			AutoSchemaUpgrade:      getEnvBool("AXIS_AUTO_SCHEMA_UPGRADE", false),
+			AuthoritativeRegion:    strings.TrimSpace(strings.ToLower(getEnv("AXIS_AUTHORITATIVE_REGION", "asia"))),
 		},
 		Auth: AuthConfig{
 			AdminUsername:   getEnv("AXIS_ADMIN_USERNAME", ""),
@@ -97,15 +101,9 @@ func Load() (*Config, error) {
 			NodeSharedToken: getEnv("AXIS_NODE_SHARED_TOKEN", ""),
 			Realm:           getEnv("AXIS_AUTH_REALM", "Axis Admin"),
 		},
-		DB: DBConfig{
-			Host:         getEnv("AXIS_DB_HOST", getEnv("DB_MASTER_HOST", "127.0.0.1")),
-			Port:         getEnvInt("AXIS_DB_PORT", getEnvInt("DB_PORT", 4000)),
-			User:         getEnv("AXIS_DB_USER", getEnv("DB_USER", "root")),
-			Password:     getEnv("AXIS_DB_PASSWORD", getEnv("DB_PASSWORD", "")),
-			Database:     getEnv("AXIS_DB_NAME", "AXIS"),
-			MaxOpenConns: getEnvInt("AXIS_DB_MAX_OPEN_CONNS", 10),
-			MaxIdleConns: getEnvInt("AXIS_DB_MAX_IDLE_CONNS", 5),
-		},
+		CoreDB:    loadDBConfig("AXIS_CORE_DB", "AXIS_DB", "platform_core"),
+		RuntimeDB: loadDBConfig("AXIS_RUNTIME_DB", "AXIS_DB", "platform_runtime"),
+		DerivedDB: loadDBConfig("AXIS_DERIVED_DB", "AXIS_DB", "platform_derived"),
 		DNS: DNSConfig{
 			Enabled:                getEnvBool("AXIS_DNS_ENABLED", false),
 			Provider:               strings.ToLower(getEnv("AXIS_DNS_PROVIDER", "")),
@@ -134,17 +132,26 @@ func Load() (*Config, error) {
 		Region: loadRegionConfig(),
 	}
 
-	if strings.TrimSpace(cfg.DB.Host) == "" {
-		return nil, fmt.Errorf("AXIS_DB_HOST must be set")
-	}
-	if cfg.DB.Port <= 0 {
-		return nil, fmt.Errorf("AXIS_DB_PORT must be positive")
-	}
-	if strings.TrimSpace(cfg.DB.User) == "" {
-		return nil, fmt.Errorf("AXIS_DB_USER must be set")
-	}
-	if strings.TrimSpace(cfg.DB.Database) == "" {
-		return nil, fmt.Errorf("AXIS_DB_NAME must be set")
+	for _, item := range []struct {
+		name string
+		cfg  DBConfig
+	}{
+		{name: "AXIS_CORE_DB", cfg: cfg.CoreDB},
+		{name: "AXIS_RUNTIME_DB", cfg: cfg.RuntimeDB},
+		{name: "AXIS_DERIVED_DB", cfg: cfg.DerivedDB},
+	} {
+		if strings.TrimSpace(item.cfg.Host) == "" {
+			return nil, fmt.Errorf("%s_HOST must be set", item.name)
+		}
+		if item.cfg.Port <= 0 {
+			return nil, fmt.Errorf("%s_PORT must be positive", item.name)
+		}
+		if strings.TrimSpace(item.cfg.User) == "" {
+			return nil, fmt.Errorf("%s_USER must be set", item.name)
+		}
+		if strings.TrimSpace(item.cfg.Database) == "" {
+			return nil, fmt.Errorf("%s_NAME must be set", item.name)
+		}
 	}
 	if strings.TrimSpace(cfg.Auth.AdminUsername) == "" {
 		return nil, fmt.Errorf("AXIS_ADMIN_USERNAME must be set")
@@ -160,6 +167,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.App.NodeMonitorIntervalSec <= 0 {
 		cfg.App.NodeMonitorIntervalSec = 5
+	}
+	if cfg.App.AuthoritativeRegion == "" {
+		cfg.App.AuthoritativeRegion = "asia"
 	}
 	if strings.TrimSpace(cfg.DNS.RecordPrefix) == "" {
 		cfg.DNS.RecordPrefix = "dl-"
@@ -227,6 +237,34 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func loadDBConfig(primaryPrefix, legacyPrefix, defaultDB string) DBConfig {
+	hostKey := primaryPrefix + "_HOST"
+	portKey := primaryPrefix + "_PORT"
+	userKey := primaryPrefix + "_USER"
+	passwordKey := primaryPrefix + "_PASSWORD"
+	nameKey := primaryPrefix + "_NAME"
+	maxOpenKey := primaryPrefix + "_MAX_OPEN_CONNS"
+	maxIdleKey := primaryPrefix + "_MAX_IDLE_CONNS"
+
+	legacyHostKey := legacyPrefix + "_HOST"
+	legacyPortKey := legacyPrefix + "_PORT"
+	legacyUserKey := legacyPrefix + "_USER"
+	legacyPasswordKey := legacyPrefix + "_PASSWORD"
+	legacyNameKey := legacyPrefix + "_NAME"
+	legacyMaxOpenKey := legacyPrefix + "_MAX_OPEN_CONNS"
+	legacyMaxIdleKey := legacyPrefix + "_MAX_IDLE_CONNS"
+
+	return DBConfig{
+		Host:         getEnv(hostKey, getEnv(legacyHostKey, getEnv("DB_MASTER_HOST", "127.0.0.1"))),
+		Port:         getEnvInt(portKey, getEnvInt(legacyPortKey, getEnvInt("DB_PORT", 4000))),
+		User:         getEnv(userKey, getEnv(legacyUserKey, getEnv("DB_USER", "root"))),
+		Password:     getEnv(passwordKey, getEnv(legacyPasswordKey, getEnv("DB_PASSWORD", ""))),
+		Database:     getEnv(nameKey, getEnv(legacyNameKey, defaultDB)),
+		MaxOpenConns: getEnvInt(maxOpenKey, getEnvInt(legacyMaxOpenKey, 10)),
+		MaxIdleConns: getEnvInt(maxIdleKey, getEnvInt(legacyMaxIdleKey, 5)),
+	}
 }
 
 func LoadCLIAuth() (*CLIAuthConfig, error) {

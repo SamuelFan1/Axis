@@ -74,8 +74,8 @@ func (s *RegionService) DeleteByUUID(ctx context.Context, regionUUID string) err
 	if zoneCount > 0 {
 		return fmt.Errorf("region still has %d zone(s), delete zones first", zoneCount)
 	}
-	// Delete associated nodes first (cascade)
-	if _, err := s.regionRepo.DeleteNodesByRegionUUID(ctx, regionUUID); err != nil {
+	// Delete associated runtime nodes first
+	if _, err := s.nodeRepo.DeleteByRegionUUID(ctx, regionUUID); err != nil {
 		return fmt.Errorf("delete nodes by region: %w", err)
 	}
 	deleted, err := s.regionRepo.DeleteByUUID(ctx, regionUUID)

@@ -22,6 +22,8 @@ type RoutingSnapshotService struct {
 	observationRepo repository.ObservationRepository
 	snapshotRepo    repository.RoutingSnapshotRepository
 	nodeRepo        repository.NodeRepository
+	regionRepo      repository.RegionRepository
+	zoneRepo        repository.ZoneRepository
 	cfg             config.RoutingConfig
 }
 
@@ -29,12 +31,16 @@ func NewRoutingSnapshotService(
 	observationRepo repository.ObservationRepository,
 	snapshotRepo repository.RoutingSnapshotRepository,
 	nodeRepo repository.NodeRepository,
+	regionRepo repository.RegionRepository,
+	zoneRepo repository.ZoneRepository,
 	cfg config.RoutingConfig,
 ) *RoutingSnapshotService {
 	return &RoutingSnapshotService{
 		observationRepo: observationRepo,
 		snapshotRepo:    snapshotRepo,
 		nodeRepo:        nodeRepo,
+		regionRepo:      regionRepo,
+		zoneRepo:        zoneRepo,
 		cfg:             cfg,
 	}
 }
@@ -66,10 +72,33 @@ func (s *RoutingSnapshotService) Generate(ctx context.Context) (routing.Manifest
 	if err != nil {
 		return routing.Manifest{}, nil, fmt.Errorf("list routing observations: %w", err)
 	}
+	regionItems, err := s.regionRepo.List(ctx)
+	if err != nil {
+		return routing.Manifest{}, nil, fmt.Errorf("list regions for routing snapshot: %w", err)
+	}
+	zones, err := s.zoneRepo.List(ctx)
+	if err != nil {
+		return routing.Manifest{}, nil, fmt.Errorf("list zones for routing snapshot: %w", err)
+	}
+
+	validRegions := make(map[string]struct{}, len(regionItems))
+	for _, item := range regionItems {
+		validRegions[item.Name] = struct{}{}
+	}
+	validZones := make(map[string]struct{}, len(zones))
+	for _, item := range zones {
+		validZones[item.RegionName+"\x00"+item.Name] = struct{}{}
+	}
 
 	upNodes := make(map[string]node.Node)
 	for _, item := range nodes {
 		if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusUp {
+			continue
+		}
+		if _, ok := validRegions[item.Region]; !ok {
+			continue
+		}
+		if _, ok := validZones[item.Region+"\x00"+item.Zone]; !ok {
 			continue
 		}
 		upNodes[item.UUID] = item
@@ -128,15 +157,15 @@ func (s *RoutingSnapshotService) Generate(ctx context.Context) (routing.Manifest
 		}
 	}
 
-	regions := make([]string, 0, len(bundlesByRegion))
+	bundleRegions := make([]string, 0, len(bundlesByRegion))
 	for regionName := range bundlesByRegion {
-		regions = append(regions, regionName)
+		bundleRegions = append(bundleRegions, regionName)
 	}
-	sort.Strings(regions)
+	sort.Strings(bundleRegions)
 
-	bundles := make([]routing.Bundle, 0, len(regions))
-	bundleRefs := make([]routing.BundleRef, 0, len(regions))
-	for _, regionName := range regions {
+	bundles := make([]routing.Bundle, 0, len(bundleRegions))
+	bundleRefs := make([]routing.BundleRef, 0, len(bundleRegions))
+	for _, regionName := range bundleRegions {
 		entries := bundlesByRegion[regionName]
 		for sourceColo := range entries {
 			sortObservedCandidates(entries[sourceColo])
