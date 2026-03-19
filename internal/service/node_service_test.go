@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/SamuelFan1/Axis/internal/domain/region"
 	"github.com/SamuelFan1/Axis/internal/domain/zone"
 	platformdns "github.com/SamuelFan1/Axis/internal/platform/dns"
+	"github.com/SamuelFan1/Axis/internal/platform/workeradmin"
 	"github.com/SamuelFan1/Axis/internal/repository"
 )
 
@@ -26,6 +28,7 @@ type stubNodeRepository struct {
 	nodes               map[string]node.Node
 	saveDNSBindingCalls []dnsBindingCall
 	archiveCalls        []archiveCall
+	updateStatusCalls   []dnsBindingCall
 }
 
 type dnsBindingCall struct {
@@ -154,6 +157,7 @@ func (r *stubNodeRepository) DeleteByZoneUUID(ctx context.Context, zoneUUID stri
 }
 
 func (r *stubNodeRepository) UpdateStatus(ctx context.Context, uuid string, status string) (bool, error) {
+	r.updateStatusCalls = append(r.updateStatusCalls, dnsBindingCall{UUID: uuid, Label: status})
 	return false, nil
 }
 
@@ -258,6 +262,34 @@ func (r *stubZoneRepository) MigrateNodesZoneUUID(ctx context.Context) error {
 	return nil
 }
 
+type stubWorkerAdminClient struct {
+	enabled      bool
+	disableCalls []string
+	enableCalls  []string
+	disableErr   error
+	enableErr    error
+}
+
+func (c *stubWorkerAdminClient) Enabled() bool {
+	return c != nil && c.enabled
+}
+
+func (c *stubWorkerAdminClient) DisableNode(ctx context.Context, originLabel string) error {
+	c.disableCalls = append(c.disableCalls, originLabel)
+	if c.disableErr != nil {
+		return c.disableErr
+	}
+	return nil
+}
+
+func (c *stubWorkerAdminClient) EnableNode(ctx context.Context, originLabel string) error {
+	c.enableCalls = append(c.enableCalls, originLabel)
+	if c.enableErr != nil {
+		return c.enableErr
+	}
+	return nil
+}
+
 func newTestNodeService(items []node.Node) *NodeService {
 	return &NodeService{
 		repo:       &stubNodeRepository{items: items},
@@ -270,6 +302,7 @@ func newTestNodeService(items []node.Node) *NodeService {
 				"europe": {"DE"},
 			},
 		},
+		workerAdmin: &stubWorkerAdminClient{enabled: true},
 	}
 }
 
@@ -407,6 +440,7 @@ func newDNSNodeService(repo *stubNodeRepository, bindingRepo *stubDNSBindingRepo
 				"asia": {"SG"},
 			},
 		},
+		&stubWorkerAdminClient{enabled: true},
 	)
 }
 
@@ -453,8 +487,111 @@ func newPolicyNodeService(repo *stubNodeRepository, requireTunnel bool) *NodeSer
 				"asia": {"SG"},
 			},
 		},
+		&stubWorkerAdminClient{enabled: true},
 	)
 }
+
+func TestSetStatusDisablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testing.T) {
+	repo := newDNSRepository(node.Node{
+		UUID:     testNodeUUID,
+		Hostname: "SGP-DIGITALOCEAN-2V8G-SERVER-01",
+		Region:   "asia",
+		Zone:     "SG",
+		Status:   node.StatusUp,
+	})
+	workerClient := &stubWorkerAdminClient{enabled: true}
+	svc := NewNodeService(
+		repo,
+		&stubRegionRepository{},
+		&stubZoneRepository{},
+		nil,
+		nil,
+		config.DNSConfig{},
+		config.RegionConfig{},
+		workerClient,
+	)
+
+	result, err := svc.SetStatus(context.Background(), testNodeUUID, node.StatusDown)
+	if err != nil {
+		t.Fatalf("SetStatus returned error: %v", err)
+	}
+	if !result.ExternalMaintenance || !result.WorkerSynced {
+		t.Fatalf("expected external maintenance synced, got %+v", result)
+	}
+	if result.Node.Status != node.StatusUp {
+		t.Fatalf("expected internal status unchanged, got %s", result.Node.Status)
+	}
+	if len(workerClient.disableCalls) != 1 || workerClient.disableCalls[0] != "api-origin-sgp-digitalocean-2v8g-server-01" {
+		t.Fatalf("unexpected disable calls: %+v", workerClient.disableCalls)
+	}
+	if len(repo.updateStatusCalls) != 0 {
+		t.Fatalf("expected no repo UpdateStatus calls, got %+v", repo.updateStatusCalls)
+	}
+}
+
+func TestSetStatusEnablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testing.T) {
+	repo := newDNSRepository(node.Node{
+		UUID:     testNodeUUID,
+		Hostname: "DEFF-DIGITALOCEAN-2V8G-SERVER-03",
+		Region:   "europe",
+		Zone:     "DE",
+		Status:   node.StatusDown,
+	})
+	workerClient := &stubWorkerAdminClient{enabled: true}
+	svc := NewNodeService(
+		repo,
+		&stubRegionRepository{},
+		&stubZoneRepository{},
+		nil,
+		nil,
+		config.DNSConfig{},
+		config.RegionConfig{},
+		workerClient,
+	)
+
+	result, err := svc.SetStatus(context.Background(), testNodeUUID, node.StatusUp)
+	if err != nil {
+		t.Fatalf("SetStatus returned error: %v", err)
+	}
+	if result.ExternalMaintenance || !result.WorkerSynced {
+		t.Fatalf("expected external maintenance cleared, got %+v", result)
+	}
+	if len(workerClient.enableCalls) != 1 || workerClient.enableCalls[0] != "api-origin-deff-digitalocean-2v8g-server-03" {
+		t.Fatalf("unexpected enable calls: %+v", workerClient.enableCalls)
+	}
+	if len(repo.updateStatusCalls) != 0 {
+		t.Fatalf("expected no repo UpdateStatus calls, got %+v", repo.updateStatusCalls)
+	}
+}
+
+func TestSetStatusReturnsWorkerAdminError(t *testing.T) {
+	repo := newDNSRepository(node.Node{
+		UUID:     testNodeUUID,
+		Hostname: "SGP-DIGITALOCEAN-2V8G-SERVER-01",
+		Status:   node.StatusUp,
+	})
+	workerClient := &stubWorkerAdminClient{enabled: true, disableErr: fmt.Errorf("worker request failed")}
+	svc := NewNodeService(
+		repo,
+		&stubRegionRepository{},
+		&stubZoneRepository{},
+		nil,
+		nil,
+		config.DNSConfig{},
+		config.RegionConfig{},
+		workerClient,
+	)
+
+	_, err := svc.SetStatus(context.Background(), testNodeUUID, node.StatusDown)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err.Error() != "worker request failed" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+var _ workeradmin.Client = (*stubWorkerAdminClient)(nil)
 
 func monitoringSnapshot(t *testing.T, sources ...map[string]string) json.RawMessage {
 	t.Helper()

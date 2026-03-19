@@ -9,14 +9,15 @@ import (
 )
 
 type Config struct {
-	App      AppConfig
-	Auth     AuthConfig
-	CoreDB   DBConfig
-	RuntimeDB DBConfig
-	DerivedDB DBConfig
-	DNS      DNSConfig
-	Routing  RoutingConfig
-	Region   RegionConfig
+	App         AppConfig
+	Auth        AuthConfig
+	CoreDB      DBConfig
+	RuntimeDB   DBConfig
+	DerivedDB   DBConfig
+	DNS         DNSConfig
+	Routing     RoutingConfig
+	WorkerAdmin WorkerAdminConfig
+	Region      RegionConfig
 }
 
 type RegionConfig struct {
@@ -58,15 +59,15 @@ type DBConfig struct {
 }
 
 type DNSConfig struct {
-	Enabled            bool
-	Provider           string
-	Zone               string
-	RecordPrefix       string
-	RecordType         string
-	TTL                int
-	Proxied            bool
-	StateDir           string
-	CloudflareAPIToken string
+	Enabled               bool
+	Provider              string
+	Zone                  string
+	RecordPrefix          string
+	RecordType            string
+	TTL                   int
+	Proxied               bool
+	StateDir              string
+	CloudflareAPIToken    string
 	RequireCFTunnelHealth bool
 	CFTunnelSourceName    string
 }
@@ -82,6 +83,11 @@ type RoutingConfig struct {
 	CloudflareAccountID     string
 	CloudflareAPIToken      string
 	CloudflareKVNamespaceID string
+}
+
+type WorkerAdminConfig struct {
+	WorkerURL         string
+	WorkerAdminSecret string
 }
 
 func Load() (*Config, error) {
@@ -105,17 +111,17 @@ func Load() (*Config, error) {
 		RuntimeDB: loadDBConfig("AXIS_RUNTIME_DB", "AXIS_DB", "platform_runtime"),
 		DerivedDB: loadDBConfig("AXIS_DERIVED_DB", "AXIS_DB", "platform_derived"),
 		DNS: DNSConfig{
-			Enabled:                getEnvBool("AXIS_DNS_ENABLED", false),
-			Provider:               strings.ToLower(getEnv("AXIS_DNS_PROVIDER", "")),
-			Zone:                   strings.TrimSpace(getEnv("AXIS_DNS_ZONE", "")),
-			RecordPrefix:           getEnv("AXIS_DNS_RECORD_PREFIX", "dl-"),
-			RecordType:             strings.ToUpper(getEnv("AXIS_DNS_RECORD_TYPE", "A")),
-			TTL:                    getEnvInt("AXIS_DNS_TTL", 1),
-			Proxied:                getEnvBool("AXIS_DNS_PROXIED", false),
-			StateDir:               strings.TrimSpace(getEnv("AXIS_DNS_STATE_DIR", "/data/axis/dns-state")),
-			CloudflareAPIToken:     getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
-			RequireCFTunnelHealth:  getEnvBool("AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH", false),
-			CFTunnelSourceName:     strings.TrimSpace(getEnv("AXIS_NODE_CF_TUNNEL_SOURCE_NAME", "cloudflared")),
+			Enabled:               getEnvBool("AXIS_DNS_ENABLED", false),
+			Provider:              strings.ToLower(getEnv("AXIS_DNS_PROVIDER", "")),
+			Zone:                  strings.TrimSpace(getEnv("AXIS_DNS_ZONE", "")),
+			RecordPrefix:          getEnv("AXIS_DNS_RECORD_PREFIX", "dl-"),
+			RecordType:            strings.ToUpper(getEnv("AXIS_DNS_RECORD_TYPE", "A")),
+			TTL:                   getEnvInt("AXIS_DNS_TTL", 1),
+			Proxied:               getEnvBool("AXIS_DNS_PROXIED", false),
+			StateDir:              strings.TrimSpace(getEnv("AXIS_DNS_STATE_DIR", "/data/axis/dns-state")),
+			CloudflareAPIToken:    getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
+			RequireCFTunnelHealth: getEnvBool("AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH", false),
+			CFTunnelSourceName:    strings.TrimSpace(getEnv("AXIS_NODE_CF_TUNNEL_SOURCE_NAME", "cloudflared")),
 		},
 		Routing: RoutingConfig{
 			Enabled:                 getEnvBool("AXIS_ROUTING_ENABLED", false),
@@ -128,6 +134,10 @@ func Load() (*Config, error) {
 			CloudflareAccountID:     strings.TrimSpace(getEnv("AXIS_ROUTING_CF_ACCOUNT_ID", "")),
 			CloudflareAPIToken:      getEnv("AXIS_ROUTING_CF_API_TOKEN", ""),
 			CloudflareKVNamespaceID: strings.TrimSpace(getEnv("AXIS_ROUTING_CF_KV_NAMESPACE_ID", "")),
+		},
+		WorkerAdmin: WorkerAdminConfig{
+			WorkerURL:         strings.TrimSpace(getEnv("AXIS_WORKER_URL", "")),
+			WorkerAdminSecret: strings.TrimSpace(getEnv("AXIS_WORKER_ADMIN_SECRET", "")),
 		},
 		Region: loadRegionConfig(),
 	}

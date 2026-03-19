@@ -217,7 +217,7 @@ func (h *NodeHandler) Monitoring(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"uuid":               uuidValue,
+		"uuid":                uuidValue,
 		"monitoring_snapshot": snapshot,
 	})
 }
@@ -334,7 +334,7 @@ func (h *NodeHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.nodeService.SetStatus(r.Context(), uuidValue, req.Status)
+	result, err := h.nodeService.SetStatus(r.Context(), uuidValue, req.Status)
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if err.Error() == "node not found" {
@@ -347,8 +347,10 @@ func (h *NodeHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message": "node status updated",
-		"node":    item,
+		"message":              "node status updated",
+		"node":                 result.Node,
+		"external_maintenance": result.ExternalMaintenance,
+		"worker_synced":        result.WorkerSynced,
 	})
 }
 

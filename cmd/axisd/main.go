@@ -8,6 +8,7 @@ import (
 	"github.com/SamuelFan1/Axis/internal/config"
 	platformdns "github.com/SamuelFan1/Axis/internal/platform/dns"
 	platformrouting "github.com/SamuelFan1/Axis/internal/platform/routingpublish"
+	"github.com/SamuelFan1/Axis/internal/platform/workeradmin"
 	"github.com/SamuelFan1/Axis/internal/repository/mysql"
 	"github.com/SamuelFan1/Axis/internal/service"
 	httptransport "github.com/SamuelFan1/Axis/internal/transport/http"
@@ -36,9 +37,10 @@ func main() {
 		dnsProvider = platformdns.NewCloudflareProvider(cfg.DNS)
 		dnsBindingRepo = mysql.NewDNSBindingRepository(dbs.Core)
 	}
+	workerAdminClient := workeradmin.NewClient(cfg.WorkerAdmin)
 	regionService := service.NewRegionService(regionRepo, nodeRepo, zoneRepo, cfg.Region)
 	zoneService := service.NewZoneService(zoneRepo, regionRepo, nodeRepo, cfg.Region)
-	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region)
+	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
 	ctx := context.Background()
 	if cfg.App.AutoSchemaUpgrade {
 		if err := regionRepo.EnsureSchema(ctx); err != nil {

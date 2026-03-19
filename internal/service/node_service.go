@@ -10,7 +10,9 @@ import (
 
 	"github.com/SamuelFan1/Axis/internal/config"
 	"github.com/SamuelFan1/Axis/internal/domain/node"
+	"github.com/SamuelFan1/Axis/internal/domain/routing"
 	platformdns "github.com/SamuelFan1/Axis/internal/platform/dns"
+	"github.com/SamuelFan1/Axis/internal/platform/workeradmin"
 	"github.com/SamuelFan1/Axis/internal/repository"
 	"github.com/google/uuid"
 )
@@ -23,9 +25,16 @@ type NodeService struct {
 	dnsBindingRepo repository.DNSBindingRepository
 	dnsConfig      config.DNSConfig
 	regionConfig   config.RegionConfig
+	workerAdmin    workeradmin.Client
 }
 
-func NewNodeService(repo repository.NodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsBindingRepo repository.DNSBindingRepository, dnsConfig config.DNSConfig, regionConfig config.RegionConfig) *NodeService {
+type NodeStatusResult struct {
+	Node                node.Node
+	ExternalMaintenance bool
+	WorkerSynced        bool
+}
+
+func NewNodeService(repo repository.NodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsBindingRepo repository.DNSBindingRepository, dnsConfig config.DNSConfig, regionConfig config.RegionConfig, workerAdmin workeradmin.Client) *NodeService {
 	return &NodeService{
 		repo:           repo,
 		regionRepo:     regionRepo,
@@ -34,6 +43,7 @@ func NewNodeService(repo repository.NodeRepository, regionRepo repository.Region
 		dnsBindingRepo: dnsBindingRepo,
 		dnsConfig:      dnsConfig,
 		regionConfig:   regionConfig,
+		workerAdmin:    workerAdmin,
 	}
 }
 
@@ -160,36 +170,50 @@ func (s *NodeService) DeleteByUUID(ctx context.Context, uuidValue string) error 
 	return nil
 }
 
-func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status string) (node.Node, error) {
+func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status string) (NodeStatusResult, error) {
 	uuidValue = strings.TrimSpace(uuidValue)
 	status = strings.ToLower(strings.TrimSpace(status))
 
 	if uuidValue == "" {
-		return node.Node{}, fmt.Errorf("uuid is required")
+		return NodeStatusResult{}, fmt.Errorf("uuid is required")
 	}
 	if _, err := uuid.Parse(uuidValue); err != nil {
-		return node.Node{}, fmt.Errorf("uuid must be a valid UUID")
+		return NodeStatusResult{}, fmt.Errorf("uuid must be a valid UUID")
 	}
 	if !node.IsValidStatus(status) {
-		return node.Node{}, fmt.Errorf("status must be up or down")
-	}
-
-	updated, err := s.repo.UpdateStatus(ctx, uuidValue, status)
-	if err != nil {
-		return node.Node{}, err
-	}
-	if !updated {
-		return node.Node{}, fmt.Errorf("node not found")
+		return NodeStatusResult{}, fmt.Errorf("status must be up or down")
 	}
 
 	item, err := s.repo.FindByUUID(ctx, uuidValue)
 	if err != nil {
-		return node.Node{}, err
+		return NodeStatusResult{}, err
 	}
 	if item == nil {
-		return node.Node{}, fmt.Errorf("node not found")
+		return NodeStatusResult{}, fmt.Errorf("node not found")
 	}
-	return *item, nil
+	if s.workerAdmin == nil || !s.workerAdmin.Enabled() {
+		return NodeStatusResult{}, fmt.Errorf("worker admin is not configured")
+	}
+
+	originLabel := routing.OriginLabelForHostname(item.Hostname)
+	if status == node.StatusDown {
+		if err := s.workerAdmin.DisableNode(ctx, originLabel); err != nil {
+			return NodeStatusResult{}, err
+		}
+		return NodeStatusResult{
+			Node:                *item,
+			ExternalMaintenance: true,
+			WorkerSynced:        true,
+		}, nil
+	}
+	if err := s.workerAdmin.EnableNode(ctx, originLabel); err != nil {
+		return NodeStatusResult{}, err
+	}
+	return NodeStatusResult{
+		Node:                *item,
+		ExternalMaintenance: false,
+		WorkerSynced:        true,
+	}, nil
 }
 
 func (s *NodeService) ListRegions(ctx context.Context) ([]node.RegionSummary, error) {

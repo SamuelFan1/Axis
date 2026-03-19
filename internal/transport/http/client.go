@@ -67,9 +67,17 @@ type updateStatusRequest struct {
 }
 
 type updateStatusResponse struct {
-	Message string    `json:"message"`
-	Node    node.Node `json:"node"`
-	Error   string    `json:"error"`
+	Message             string    `json:"message"`
+	Node                node.Node `json:"node"`
+	ExternalMaintenance bool      `json:"external_maintenance"`
+	WorkerSynced        bool      `json:"worker_synced"`
+	Error               string    `json:"error"`
+}
+
+type UpdateNodeStatusResult struct {
+	Node                node.Node
+	ExternalMaintenance bool
+	WorkerSynced        bool
 }
 
 type deleteNodeResponse struct {
@@ -151,12 +159,16 @@ func (c *Client) DeleteNode(uuid string) error {
 	return c.doJSON(nethttp.MethodDelete, "/api/v1/nodes/"+uuid, nil, &resp)
 }
 
-func (c *Client) UpdateNodeStatus(uuid string, status string) (node.Node, error) {
+func (c *Client) UpdateNodeStatus(uuid string, status string) (UpdateNodeStatusResult, error) {
 	var resp updateStatusResponse
 	if err := c.doJSON(nethttp.MethodPost, "/api/v1/nodes/"+uuid+"/status", updateStatusRequest{Status: status}, &resp); err != nil {
-		return node.Node{}, err
+		return UpdateNodeStatusResult{}, err
 	}
-	return resp.Node, nil
+	return UpdateNodeStatusResult{
+		Node:                resp.Node,
+		ExternalMaintenance: resp.ExternalMaintenance,
+		WorkerSynced:        resp.WorkerSynced,
+	}, nil
 }
 
 func (c *Client) ListRegions() ([]regionListItem, error) {

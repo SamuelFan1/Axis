@@ -336,16 +336,22 @@ func runServiceSetStatus(uuidValue string, status string) error {
 		return err
 	}
 
-	item, err := client.UpdateNodeStatus(uuidValue, status)
+	result, err := client.UpdateNodeStatus(uuidValue, status)
 	if err != nil {
 		return err
 	}
 
+	action := "disable"
+	if status == node.StatusUp {
+		action = "enable"
+	}
 	printRecord("SERVICE_STATUS_RESULT", [][2]string{
-		{"UUID", item.UUID},
-		{"HOSTNAME", item.Hostname},
-		{"STATUS", item.Status},
-		{"REGION", item.Region},
+		{"UUID", result.Node.UUID},
+		{"HOSTNAME", result.Node.Hostname},
+		{"ACTION", action},
+		{"EXTERNAL_MAINTENANCE", fmt.Sprintf("%t", result.ExternalMaintenance)},
+		{"WORKER_SYNCED", fmt.Sprintf("%t", result.WorkerSynced)},
+		{"REGION", result.Node.Region},
 	})
 	return nil
 }
@@ -498,8 +504,8 @@ func printUsage() {
 	fmt.Println("  axis service-show <uuid>")
 	fmt.Println("  axis service-workloads <uuid>")
 	fmt.Println("  axis service-delete <uuid>")
-	fmt.Println("  axis service-up <uuid>")
-	fmt.Println("  axis service-down <uuid>")
+	fmt.Println("  axis service-up <uuid>      # 仅恢复 Worker 外部流量")
+	fmt.Println("  axis service-down <uuid>    # 仅摘除 Worker 外部流量")
 	fmt.Println("  axis region-list")
 	fmt.Println("  axis region-create --name <name>")
 	fmt.Println("  axis region-delete <uuid>")

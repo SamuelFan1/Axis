@@ -697,11 +697,23 @@ axis service-delete <uuid>
 axis service-up <uuid>
 ```
 
+说明：
+
+- 该命令仅恢复 `Cloudflare Worker` 外部用户流量到该节点
+- 不会中断或恢复 `cloudflared tunnel`
+- 不会影响内部 `Axis /api/v1/nodes/assign`、节点心跳或内部服务访问
+
 ### 设置服务器为 down
 
 ```bash
 axis service-down <uuid>
 ```
+
+说明：
+
+- 该命令仅将该节点从 `Cloudflare Worker` 外部用户流量中摘除
+- 不会断开 `cloudflared tunnel`
+- 不会影响内部 `Axis /api/v1/nodes/assign`、节点心跳或内部服务访问
 
 ### 查看区域聚合信息
 

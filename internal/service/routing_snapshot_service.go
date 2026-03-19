@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -15,8 +14,6 @@ import (
 	"github.com/SamuelFan1/Axis/internal/domain/routing"
 	"github.com/SamuelFan1/Axis/internal/repository"
 )
-
-var invalidOriginLabelChars = regexp.MustCompile(`[^a-z0-9-]+`)
 
 type RoutingSnapshotService struct {
 	observationRepo repository.ObservationRepository
@@ -234,7 +231,7 @@ func fallbackCandidate(item node.Node) routing.Candidate {
 	return routing.Candidate{
 		NodeUUID:    item.UUID,
 		Hostname:    item.Hostname,
-		OriginLabel: originLabelForHostname(item.Hostname),
+		OriginLabel: routing.OriginLabelForHostname(item.Hostname),
 		Region:      item.Region,
 		Zone:        item.Zone,
 		Score:       resourceScore(item),
@@ -252,7 +249,7 @@ func observedCandidate(item node.Node, obs observation.Aggregate) routing.Candid
 	return routing.Candidate{
 		NodeUUID:       item.UUID,
 		Hostname:       item.Hostname,
-		OriginLabel:    originLabelForHostname(item.Hostname),
+		OriginLabel:    routing.OriginLabelForHostname(item.Hostname),
 		Region:         item.Region,
 		Zone:           item.Zone,
 		Score:          score,
@@ -299,28 +296,6 @@ func trimCandidates(items []routing.Candidate, limit int) []routing.Candidate {
 
 func resourceScore(item node.Node) float64 {
 	return item.DiskUsagePercent*0.5 + item.CPUUsagePercent*0.3 + item.MemoryUsagePercent*0.2
-}
-
-func originLabelForHostname(hostname string) string {
-	label := strings.ToLower(strings.TrimSpace(hostname))
-	label = invalidOriginLabelChars.ReplaceAllString(label, "-")
-	label = strings.Trim(label, "-")
-	label = strings.ReplaceAll(label, "--", "-")
-	for strings.Contains(label, "--") {
-		label = strings.ReplaceAll(label, "--", "-")
-	}
-	if label == "" {
-		label = "node"
-	}
-	maxLabelLen := 63 - len("api-origin-")
-	if len(label) > maxLabelLen {
-		label = label[:maxLabelLen]
-	}
-	label = strings.Trim(label, "-")
-	if label == "" {
-		label = "node"
-	}
-	return "api-origin-" + label
 }
 
 func isFinite(v float64) bool {
