@@ -47,53 +47,41 @@ func (r *stubNodeRepository) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
-func (r *stubNodeRepository) FindActiveByManagementAddress(ctx context.Context, managementAddress string) (*node.Node, error) {
+func (r *stubNodeRepository) FindActiveByManagementAddress(ctx context.Context, managementAddress string) (*node.NodeIdentity, error) {
 	for _, item := range r.nodes {
 		if item.ManagementAddress == managementAddress {
-			copied := item
+			copied := identityFromNode(item)
 			return &copied, nil
 		}
 	}
 	return nil, nil
 }
 
-func (r *stubNodeRepository) FindByManagementAddress(ctx context.Context, managementAddress string) (*node.Node, error) {
-	return r.FindActiveByManagementAddress(ctx, managementAddress)
-}
-
-func (r *stubNodeRepository) FindByUUID(ctx context.Context, uuid string) (*node.Node, error) {
+func (r *stubNodeRepository) FindIdentityByUUID(ctx context.Context, uuid string) (*node.NodeIdentity, error) {
 	if item, ok := r.nodes[uuid]; ok {
-		copied := item
+		copied := identityFromNode(item)
 		return &copied, nil
 	}
 	return nil, nil
 }
 
-func (r *stubNodeRepository) Upsert(ctx context.Context, item node.Node) error {
+func (r *stubNodeRepository) UpsertIdentity(ctx context.Context, item node.NodeIdentity) error {
 	if r.nodes == nil {
 		r.nodes = make(map[string]node.Node)
 	}
-	r.nodes[item.UUID] = item
-	return nil
-}
-
-func (r *stubNodeRepository) UpdateHeartbeat(ctx context.Context, item node.Node) error {
-	if r.nodes == nil {
-		return nil
-	}
-
-	existing, ok := r.nodes[item.UUID]
-	if !ok {
-		return sql.ErrNoRows
-	}
-
-	item.DNSLabel = existing.DNSLabel
-	item.DNSName = existing.DNSName
-	item.CreatedAt = existing.CreatedAt
-	item.UpdatedAt = time.Now().UTC()
-	item.LastSeenAt = item.UpdatedAt
-	item.LastReportedAt = item.UpdatedAt
-	r.nodes[item.UUID] = item
+	existing := r.nodes[item.UUID]
+	existing.UUID = item.UUID
+	existing.Hostname = item.Hostname
+	existing.ManagementAddress = item.ManagementAddress
+	existing.InternalIP = item.InternalIP
+	existing.PublicIP = item.PublicIP
+	existing.DNSLabel = item.DNSLabel
+	existing.DNSName = item.DNSName
+	existing.Region = item.Region
+	existing.RegionUUID = item.RegionUUID
+	existing.Zone = item.Zone
+	existing.ZoneUUID = item.ZoneUUID
+	r.nodes[item.UUID] = existing
 	return nil
 }
 
@@ -144,6 +132,14 @@ func (r *stubNodeRepository) List(ctx context.Context) ([]node.Node, error) {
 	return r.items, nil
 }
 
+func (r *stubNodeRepository) FindByUUID(ctx context.Context, uuid string) (*node.Node, error) {
+	if item, ok := r.nodes[uuid]; ok {
+		copied := item
+		return &copied, nil
+	}
+	return nil, nil
+}
+
 func (r *stubNodeRepository) DeleteByUUID(ctx context.Context, uuid string) (bool, error) {
 	return false, nil
 }
@@ -156,11 +152,6 @@ func (r *stubNodeRepository) DeleteByZoneUUID(ctx context.Context, zoneUUID stri
 	return 0, nil
 }
 
-func (r *stubNodeRepository) UpdateStatus(ctx context.Context, uuid string, status string) (bool, error) {
-	r.updateStatusCalls = append(r.updateStatusCalls, dnsBindingCall{UUID: uuid, Label: status})
-	return false, nil
-}
-
 func (r *stubNodeRepository) ListRegions(ctx context.Context) ([]node.RegionSummary, error) {
 	return nil, nil
 }
@@ -171,6 +162,80 @@ func (r *stubNodeRepository) ListRegionZones(ctx context.Context) ([]node.Region
 
 func (r *stubNodeRepository) MarkTimedOutNodesDown(ctx context.Context, localRegion string, timeoutSec int) (int, error) {
 	return 0, nil
+}
+
+func (r *stubNodeRepository) UpsertHealth(ctx context.Context, item node.NodeHealth) error {
+	existing, ok := r.nodes[item.NodeUUID]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	existing.Status = item.Status
+	existing.LastSeenAt = time.Now().UTC()
+	existing.LastReportedAt = existing.LastSeenAt
+	existing.CPUCores = item.CPUCores
+	existing.CPUUsagePercent = item.CPUUsagePercent
+	existing.MemoryTotalGB = item.MemoryTotalGB
+	existing.MemoryUsedGB = item.MemoryUsedGB
+	existing.MemoryUsagePercent = item.MemoryUsagePercent
+	existing.SwapTotalGB = item.SwapTotalGB
+	existing.SwapUsedGB = item.SwapUsedGB
+	existing.SwapUsagePercent = item.SwapUsagePercent
+	existing.DiskUsagePercent = item.DiskUsagePercent
+	existing.DiskDetails = item.DiskDetails
+	existing.MonitoringSnapshot = item.MonitoringSnapshot
+	r.nodes[item.NodeUUID] = existing
+	return nil
+}
+
+func (r *stubNodeRepository) FindLatestHealthByNodeUUID(ctx context.Context, nodeUUID string) (*node.NodeHealth, error) {
+	item, ok := r.nodes[nodeUUID]
+	if !ok {
+		return nil, nil
+	}
+	return &node.NodeHealth{
+		ObserverRegion:     item.Region,
+		NodeUUID:           item.UUID,
+		Status:             item.Status,
+		CPUCores:           item.CPUCores,
+		CPUUsagePercent:    item.CPUUsagePercent,
+		MemoryTotalGB:      item.MemoryTotalGB,
+		MemoryUsedGB:       item.MemoryUsedGB,
+		MemoryUsagePercent: item.MemoryUsagePercent,
+		SwapTotalGB:        item.SwapTotalGB,
+		SwapUsedGB:         item.SwapUsedGB,
+		SwapUsagePercent:   item.SwapUsagePercent,
+		DiskUsagePercent:   item.DiskUsagePercent,
+		DiskDetails:        item.DiskDetails,
+		MonitoringSnapshot: item.MonitoringSnapshot,
+		LastSeenAt:         item.LastSeenAt,
+		LastReportedAt:     item.LastReportedAt,
+	}, nil
+}
+
+func (r *stubNodeRepository) GetMonitoringSnapshot(ctx context.Context, nodeUUID string) (json.RawMessage, error) {
+	item, ok := r.nodes[nodeUUID]
+	if !ok {
+		return nil, fmt.Errorf("node not found")
+	}
+	return item.MonitoringSnapshot, nil
+}
+
+func identityFromNode(item node.Node) node.NodeIdentity {
+	return node.NodeIdentity{
+		UUID:              item.UUID,
+		Hostname:          item.Hostname,
+		ManagementAddress: item.ManagementAddress,
+		InternalIP:        item.InternalIP,
+		PublicIP:          item.PublicIP,
+		DNSLabel:          item.DNSLabel,
+		DNSName:           item.DNSName,
+		Region:            item.Region,
+		RegionUUID:        item.RegionUUID,
+		Zone:              item.Zone,
+		ZoneUUID:          item.ZoneUUID,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+	}
 }
 
 type stubRegionRepository struct{}
@@ -292,9 +357,11 @@ func (c *stubWorkerAdminClient) EnableNode(ctx context.Context, originLabel stri
 
 func newTestNodeService(items []node.Node) *NodeService {
 	return &NodeService{
-		repo:       &stubNodeRepository{items: items},
-		regionRepo: &stubRegionRepository{},
-		zoneRepo:   &stubZoneRepository{},
+		viewRepo:     &stubNodeRepository{items: items},
+		identityRepo: &stubNodeRepository{items: items},
+		healthRepo:   &stubNodeRepository{items: items},
+		regionRepo:   &stubRegionRepository{},
+		zoneRepo:     &stubZoneRepository{},
 		regionConfig: config.RegionConfig{
 			Regions: []string{"asia", "europe"},
 			RegionZones: map[string][]string{
@@ -421,6 +488,8 @@ func newDNSNodeService(repo *stubNodeRepository, bindingRepo *stubDNSBindingRepo
 	}
 	return NewNodeService(
 		repo,
+		repo,
+		repo,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
 		provider,
@@ -473,6 +542,8 @@ func newPolicyNodeService(repo *stubNodeRepository, requireTunnel bool) *NodeSer
 	}
 	return NewNodeService(
 		repo,
+		repo,
+		repo,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
 		nil,
@@ -501,6 +572,8 @@ func TestSetStatusDisablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testin
 	})
 	workerClient := &stubWorkerAdminClient{enabled: true}
 	svc := NewNodeService(
+		repo,
+		repo,
 		repo,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
@@ -540,6 +613,8 @@ func TestSetStatusEnablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testing
 	workerClient := &stubWorkerAdminClient{enabled: true}
 	svc := NewNodeService(
 		repo,
+		repo,
+		repo,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
 		nil,
@@ -572,6 +647,8 @@ func TestSetStatusReturnsWorkerAdminError(t *testing.T) {
 	})
 	workerClient := &stubWorkerAdminClient{enabled: true, disableErr: fmt.Errorf("worker request failed")}
 	svc := NewNodeService(
+		repo,
+		repo,
 		repo,
 		&stubRegionRepository{},
 		&stubZoneRepository{},

@@ -15,15 +15,17 @@ import (
 type ZoneService struct {
 	zoneRepo   repository.ZoneRepository
 	regionRepo repository.RegionRepository
-	nodeRepo   repository.NodeRepository
+	nodeRepo   repository.NodeIdentityRepository
+	viewRepo   repository.NodeViewRepository
 	config     config.RegionConfig
 }
 
-func NewZoneService(zoneRepo repository.ZoneRepository, regionRepo repository.RegionRepository, nodeRepo repository.NodeRepository, cfg config.RegionConfig) *ZoneService {
+func NewZoneService(zoneRepo repository.ZoneRepository, regionRepo repository.RegionRepository, nodeRepo repository.NodeIdentityRepository, viewRepo repository.NodeViewRepository, cfg config.RegionConfig) *ZoneService {
 	return &ZoneService{
 		zoneRepo:   zoneRepo,
 		regionRepo: regionRepo,
 		nodeRepo:   nodeRepo,
+		viewRepo:   viewRepo,
 		config:     cfg,
 	}
 }
@@ -88,7 +90,7 @@ func (s *ZoneService) List(ctx context.Context) ([]zone.ZoneListItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	summaries, err := s.nodeRepo.ListRegionZones(ctx)
+	summaries, err := s.viewRepo.ListRegionZones(ctx)
 	if err != nil {
 		return nil, err
 	}

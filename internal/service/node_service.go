@@ -18,7 +18,9 @@ import (
 )
 
 type NodeService struct {
-	repo           repository.NodeRepository
+	identityRepo   repository.NodeIdentityRepository
+	healthRepo     repository.NodeHealthRepository
+	viewRepo       repository.NodeViewRepository
 	regionRepo     repository.RegionRepository
 	zoneRepo       repository.ZoneRepository
 	dnsProvider    platformdns.Provider
@@ -34,9 +36,11 @@ type NodeStatusResult struct {
 	WorkerSynced        bool
 }
 
-func NewNodeService(repo repository.NodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsBindingRepo repository.DNSBindingRepository, dnsConfig config.DNSConfig, regionConfig config.RegionConfig, workerAdmin workeradmin.Client) *NodeService {
+func NewNodeService(identityRepo repository.NodeIdentityRepository, healthRepo repository.NodeHealthRepository, viewRepo repository.NodeViewRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsBindingRepo repository.DNSBindingRepository, dnsConfig config.DNSConfig, regionConfig config.RegionConfig, workerAdmin workeradmin.Client) *NodeService {
 	return &NodeService{
-		repo:           repo,
+		identityRepo:   identityRepo,
+		healthRepo:     healthRepo,
+		viewRepo:       viewRepo,
 		regionRepo:     regionRepo,
 		zoneRepo:       zoneRepo,
 		dnsProvider:    dnsProvider,
@@ -48,7 +52,10 @@ func NewNodeService(repo repository.NodeRepository, regionRepo repository.Region
 }
 
 func (s *NodeService) EnsureSchema(ctx context.Context) error {
-	if err := s.repo.EnsureSchema(ctx); err != nil {
+	if err := s.identityRepo.EnsureSchema(ctx); err != nil {
+		return err
+	}
+	if err := s.healthRepo.EnsureSchema(ctx); err != nil {
 		return err
 	}
 	if s.dnsConfig.Enabled && s.dnsBindingRepo != nil {
@@ -104,7 +111,7 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 		return node.Node{}, fmt.Errorf("status must be up or down")
 	}
 
-	existing, err := s.repo.FindActiveByManagementAddress(ctx, item.ManagementAddress)
+	existing, err := s.identityRepo.FindActiveByManagementAddress(ctx, item.ManagementAddress)
 	if err != nil {
 		return node.Node{}, fmt.Errorf("find existing node: %w", err)
 	}
@@ -117,19 +124,33 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 		return node.Node{}, fmt.Errorf("uuid must be a valid UUID")
 	}
 	if existing != nil && existing.UUID != item.UUID {
-		if err := s.repo.ArchiveAndDeleteByManagementAddress(ctx, item.ManagementAddress, item.UUID, "replaced_by_new_uuid"); err != nil {
+		if err := s.identityRepo.ArchiveAndDeleteByManagementAddress(ctx, item.ManagementAddress, item.UUID, "replaced_by_new_uuid"); err != nil {
 			return node.Node{}, fmt.Errorf("archive existing node: %w", err)
 		}
 	}
 
-	if err := s.repo.Upsert(ctx, item); err != nil {
+	if err := s.identityRepo.UpsertIdentity(ctx, node.NodeIdentity{
+		UUID:              item.UUID,
+		Hostname:          item.Hostname,
+		ManagementAddress: item.ManagementAddress,
+		InternalIP:        item.InternalIP,
+		PublicIP:          item.PublicIP,
+		DNSLabel:          item.DNSLabel,
+		DNSName:           item.DNSName,
+		Region:            item.Region,
+		RegionUUID:        item.RegionUUID,
+		Zone:              item.Zone,
+		ZoneUUID:          item.ZoneUUID,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+	}); err != nil {
 		return node.Node{}, err
 	}
 	return item, nil
 }
 
 func (s *NodeService) List(ctx context.Context) ([]node.Node, error) {
-	return s.repo.List(ctx)
+	return s.viewRepo.List(ctx)
 }
 
 func (s *NodeService) GetByUUID(ctx context.Context, uuidValue string) (node.Node, error) {
@@ -141,7 +162,7 @@ func (s *NodeService) GetByUUID(ctx context.Context, uuidValue string) (node.Nod
 		return node.Node{}, fmt.Errorf("uuid must be a valid UUID")
 	}
 
-	item, err := s.repo.FindByUUID(ctx, uuidValue)
+	item, err := s.viewRepo.FindByUUID(ctx, uuidValue)
 	if err != nil {
 		return node.Node{}, err
 	}
@@ -160,7 +181,7 @@ func (s *NodeService) DeleteByUUID(ctx context.Context, uuidValue string) error 
 		return fmt.Errorf("uuid must be a valid UUID")
 	}
 
-	deleted, err := s.repo.DeleteByUUID(ctx, uuidValue)
+	deleted, err := s.identityRepo.DeleteByUUID(ctx, uuidValue)
 	if err != nil {
 		return err
 	}
@@ -184,7 +205,7 @@ func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status st
 		return NodeStatusResult{}, fmt.Errorf("status must be up or down")
 	}
 
-	item, err := s.repo.FindByUUID(ctx, uuidValue)
+	item, err := s.viewRepo.FindByUUID(ctx, uuidValue)
 	if err != nil {
 		return NodeStatusResult{}, err
 	}
@@ -217,11 +238,11 @@ func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status st
 }
 
 func (s *NodeService) ListRegions(ctx context.Context) ([]node.RegionSummary, error) {
-	return s.repo.ListRegions(ctx)
+	return s.viewRepo.ListRegions(ctx)
 }
 
 func (s *NodeService) ListRegionZones(ctx context.Context) ([]node.RegionZoneSummary, error) {
-	return s.repo.ListRegionZones(ctx)
+	return s.viewRepo.ListRegionZones(ctx)
 }
 
 func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zone string) (node.Node, error) {
@@ -238,7 +259,7 @@ func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zon
 		return node.Node{}, err
 	}
 
-	items, err := s.repo.List(ctx)
+	items, err := s.viewRepo.List(ctx)
 	if err != nil {
 		return node.Node{}, err
 	}
@@ -333,14 +354,45 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	}
 	item.Status = s.applyMonitoringHealthPolicy(item.Status, item.MonitoringSnapshot)
 
-	if err := s.repo.UpdateHeartbeat(ctx, item); err != nil {
+	identity, err := s.identityRepo.FindIdentityByUUID(ctx, item.UUID)
+	if err != nil {
+		return node.Node{}, err
+	}
+	if identity == nil {
+		return node.Node{}, fmt.Errorf("node not found")
+	}
+	identity.Hostname = item.Hostname
+	identity.ManagementAddress = item.ManagementAddress
+	identity.InternalIP = item.InternalIP
+	identity.PublicIP = item.PublicIP
+	if err := s.identityRepo.UpsertIdentity(ctx, *identity); err != nil {
+		return node.Node{}, err
+	}
+
+	if err := s.healthRepo.UpsertHealth(ctx, node.NodeHealth{
+		ObserverRegion:     s.observerRegion(item.Region),
+		NodeUUID:           item.UUID,
+		Status:             item.Status,
+		StatusSource:       "self_report",
+		CPUCores:           item.CPUCores,
+		CPUUsagePercent:    item.CPUUsagePercent,
+		MemoryTotalGB:      item.MemoryTotalGB,
+		MemoryUsedGB:       item.MemoryUsedGB,
+		MemoryUsagePercent: item.MemoryUsagePercent,
+		SwapTotalGB:        item.SwapTotalGB,
+		SwapUsedGB:         item.SwapUsedGB,
+		SwapUsagePercent:   item.SwapUsagePercent,
+		DiskUsagePercent:   item.DiskUsagePercent,
+		DiskDetails:        item.DiskDetails,
+		MonitoringSnapshot: item.MonitoringSnapshot,
+	}); err != nil {
 		if err == sql.ErrNoRows {
 			return node.Node{}, fmt.Errorf("node not found")
 		}
 		return node.Node{}, err
 	}
 
-	updated, err := s.repo.FindByUUID(ctx, item.UUID)
+	updated, err := s.viewRepo.FindByUUID(ctx, item.UUID)
 	if err != nil {
 		return node.Node{}, err
 	}
@@ -362,11 +414,11 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 }
 
 func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue string) (json.RawMessage, error) {
-	item, err := s.GetByUUID(ctx, uuidValue)
+	snapshot, err := s.healthRepo.GetMonitoringSnapshot(ctx, uuidValue)
 	if err != nil {
 		return nil, err
 	}
-	return item.MonitoringSnapshot, nil
+	return snapshot, nil
 }
 
 func (s *NodeService) ensureCentralDNSBinding(ctx context.Context, item *node.Node) (node.Node, error) {
@@ -404,7 +456,7 @@ func (s *NodeService) ensureCentralDNSBinding(ctx context.Context, item *node.No
 }
 
 func (s *NodeService) saveDNSBinding(ctx context.Context, uuid string, label string, name string) error {
-	if err := s.repo.SaveDNSBinding(ctx, uuid, label, name); err != nil {
+	if err := s.identityRepo.SaveDNSBinding(ctx, uuid, label, name); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("node not found")
 		}
@@ -511,5 +563,13 @@ func (s *NodeService) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int)
 	if timeoutSec <= 0 {
 		timeoutSec = 30
 	}
-	return s.repo.MarkTimedOutNodesDown(ctx, s.regionConfig.LocalRegion, timeoutSec)
+	return s.healthRepo.MarkTimedOutNodesDown(ctx, s.regionConfig.LocalRegion, timeoutSec)
+}
+
+func (s *NodeService) observerRegion(fallback string) string {
+	regionValue := strings.TrimSpace(strings.ToLower(s.regionConfig.LocalRegion))
+	if regionValue != "" {
+		return regionValue
+	}
+	return strings.TrimSpace(strings.ToLower(fallback))
 }

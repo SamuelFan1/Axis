@@ -18,7 +18,7 @@ import (
 type RoutingSnapshotService struct {
 	observationRepo repository.ObservationRepository
 	snapshotRepo    repository.RoutingSnapshotRepository
-	nodeRepo        repository.NodeRepository
+	nodeViewRepo    repository.NodeViewRepository
 	regionRepo      repository.RegionRepository
 	zoneRepo        repository.ZoneRepository
 	cfg             config.RoutingConfig
@@ -27,7 +27,7 @@ type RoutingSnapshotService struct {
 func NewRoutingSnapshotService(
 	observationRepo repository.ObservationRepository,
 	snapshotRepo repository.RoutingSnapshotRepository,
-	nodeRepo repository.NodeRepository,
+	nodeViewRepo repository.NodeViewRepository,
 	regionRepo repository.RegionRepository,
 	zoneRepo repository.ZoneRepository,
 	cfg config.RoutingConfig,
@@ -35,7 +35,7 @@ func NewRoutingSnapshotService(
 	return &RoutingSnapshotService{
 		observationRepo: observationRepo,
 		snapshotRepo:    snapshotRepo,
-		nodeRepo:        nodeRepo,
+		nodeViewRepo:    nodeViewRepo,
 		regionRepo:      regionRepo,
 		zoneRepo:        zoneRepo,
 		cfg:             cfg,
@@ -61,7 +61,7 @@ func (s *RoutingSnapshotService) GenerateAndStore(ctx context.Context) (routing.
 }
 
 func (s *RoutingSnapshotService) Generate(ctx context.Context) (routing.Manifest, []routing.Bundle, error) {
-	nodes, err := s.nodeRepo.List(ctx)
+	nodes, err := s.nodeViewRepo.List(ctx)
 	if err != nil {
 		return routing.Manifest{}, nil, fmt.Errorf("list nodes for routing snapshot: %w", err)
 	}

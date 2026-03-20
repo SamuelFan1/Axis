@@ -13,12 +13,12 @@ import (
 
 type RegionService struct {
 	regionRepo repository.RegionRepository
-	nodeRepo   repository.NodeRepository
+	nodeRepo   repository.NodeIdentityRepository
 	zoneRepo   repository.ZoneRepository
 	config     config.RegionConfig
 }
 
-func NewRegionService(regionRepo repository.RegionRepository, nodeRepo repository.NodeRepository, zoneRepo repository.ZoneRepository, cfg config.RegionConfig) *RegionService {
+func NewRegionService(regionRepo repository.RegionRepository, nodeRepo repository.NodeIdentityRepository, zoneRepo repository.ZoneRepository, cfg config.RegionConfig) *RegionService {
 	return &RegionService{
 		regionRepo: regionRepo,
 		nodeRepo:   nodeRepo,

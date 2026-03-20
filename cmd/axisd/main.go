@@ -39,8 +39,8 @@ func main() {
 	}
 	workerAdminClient := workeradmin.NewClient(cfg.WorkerAdmin)
 	regionService := service.NewRegionService(regionRepo, nodeRepo, zoneRepo, cfg.Region)
-	zoneService := service.NewZoneService(zoneRepo, regionRepo, nodeRepo, cfg.Region)
-	nodeService := service.NewNodeService(nodeRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
+	zoneService := service.NewZoneService(zoneRepo, regionRepo, nodeRepo, nodeRepo, cfg.Region)
+	nodeService := service.NewNodeService(nodeRepo, nodeRepo, nodeRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
 	ctx := context.Background()
 	if cfg.App.AutoSchemaUpgrade {
 		if err := regionRepo.EnsureSchema(ctx); err != nil {

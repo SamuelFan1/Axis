@@ -22,6 +22,7 @@ flowchart TD
 
     subgraph axisRuntime [AxisRuntime]
         managedNodes[managed_nodes]
+        nodeHealthByRegion[node_health_by_region]
         managedNodesHistory[managed_nodes_history]
         routingObservations[routing_observations]
         managedNodeMetricsExt[managed_node_metrics_ext]
@@ -45,7 +46,8 @@ flowchart TD
 | `zones` | `AxisCore` | 静态主数据 | 亚洲权威写 + 全局静态同步 |
 | `dns_bindings` | `AxisCore` | 全局命名权威表 | 亚洲权威写 + 单向复制 |
 | `dns_binding_counters` | `AxisCore` | 全局序号分配器 | 亚洲权威写 + 单向复制 |
-| `managed_nodes` | `AxisRuntime` | 区域运行态 | 区域本地化 |
+| `managed_nodes` | `AxisCore` | 全局节点身份表 | 亚洲权威写 + 全局静态同步 |
+| `node_health_by_region` | `AxisRuntime` | 区域健康表 | 区域本地化 |
 | `managed_nodes_history` | `AxisRuntime` | 区域运行态历史 | 区域本地化 |
 | `routing_observations` | `AxisRuntime` | 区域观测累加表 | 区域本地化 |
 | `routing_snapshot_manifests` | `AxisDerived` | 单权威派生产物 | 亚洲单点生成 + 全区复制 |
@@ -55,25 +57,20 @@ flowchart TD
 
 ## `managed_nodes`
 
-- 表功能：活动节点主表，保存节点身份、运行态资源指标、调度热路径读模型，以及与静态主数据关联的 UUID 锚点。
+- 表功能：全球节点身份表，保存节点身份、归属、命名空间与静态主数据锚点。
 - 主键 / 关键唯一约束：
   - 主键：`uuid`
   - 唯一约束：`management_address`、`dns_label`、`dns_name`
 - 主要写入来源：
   - `POST /api/v1/nodes/register`
-  - `POST /api/v1/nodes/report`
-  - 管理员 `service-up` / `service-down`
-  - 后台 `NodeMonitor` 超时将节点标记为 `down`
   - DNS 绑定成功后的镜像回写
 - 容易遗漏的自动维护链路：
-  - `axis-node` 周期心跳会持续覆盖 `cpu_usage_percent`、`memory_used_gb`、`monitoring_snapshot`
-  - `NodeMonitor` 会自动更新 `status`
-  - `region` / `zone` 是调度与路由热路径使用的文本读模型
+  - `region` / `zone` 是全局调度读模型的文本镜像
   - `region_uuid` / `zone_uuid` 是静态主数据关系锚点
   - `dns_label` / `dns_name` 是显示镜像，权威绑定关系在 `dns_bindings`
-- 数据性质：区域运行态热表
-- 最终建议策略：`区域本地化`
-- 理由：这张表的差异天然表现为同一 `uuid` 的实时状态不同，不适合要求多区长期字节级一致。更合理的是本区主写、全局只读汇总。
+- 数据性质：全局身份真相表
+- 最终建议策略：`亚洲权威写 + 全局静态同步`
+- 理由：节点是谁、属于哪个 region/zone、占用哪个 DNS 名称，必须是全局唯一且跨区一致的，不应再被高频心跳覆盖。
 
 ### 字段拆分建议
 
@@ -81,18 +78,35 @@ flowchart TD
   - 节点身份：`uuid`、`hostname`、`management_address`
   - 热路径读模型：`region`、`zone`
   - 关系锚点：`region_uuid`、`zone_uuid`
-  - 关键状态：`status`
   - DNS 显示镜像：`dns_label`、`dns_name`
-  - 轻量时间字段：`created_at`、`updated_at`、`last_seen_at`、`last_reported_at`
-- 建议优先评估拆到运行态扩展表：
+  - 轻量身份时间字段：`created_at`、`updated_at`
+- 建议迁出到区域健康层：
+  - `status`
+  - `last_seen_at`、`last_reported_at`
   - 大字段：`monitoring_snapshot`、`disk_details`
   - 高频指标：`cpu_usage_percent`、`memory_total_gb`、`memory_used_gb`、`memory_usage_percent`
   - 高频指标：`swap_total_gb`、`swap_used_gb`、`swap_usage_percent`、`disk_usage_percent`
-- 推荐扩展表方向：`managed_node_metrics_ext`
+- 推荐扩展表方向：`node_health_by_region` + `managed_node_metrics_ext`
 - 理由：
-  - 这些字段由 `axis-node` 高频上报
+  - 这些字段由 `axis-node` 高频上报，天然属于区域观测而非全球身份
   - JSON 和多组资源指标会放大 TiCDC 复制成本与主表写放大
-  - 调度热路径并不需要每次都读取完整监控快照
+  - 控制面读路径应聚合“身份 + 本区健康”，而不是让身份表直接承载运行态
+
+## `node_health_by_region`
+
+- 表功能：按 `(observer_region, node_uuid)` 记录区域控制面对节点的健康判断与最近上报时间。
+- 主键 / 关键唯一约束：
+  - 主键：`observer_region, node_uuid`
+- 主要写入来源：
+  - `POST /api/v1/nodes/report`
+  - 后台 `NodeMonitor` 超时将本区健康收敛为 `down`
+- 容易遗漏的自动维护链路：
+  - `service-list` / `service-show` / assign / routing snapshot 读取的是“节点身份 + 归属 region 对应的健康记录”的聚合视图
+  - `service-up` / `service-down` 仍只影响 Worker 外部流量，不作为健康事实来源
+  - `managed_node_metrics_ext` 当前仍作为区域健康层的指标扩展表使用
+- 数据性质：区域健康表
+- 最终建议策略：`区域本地化`
+- 理由：健康状态是观察结果，不同区域允许短时差异；把它单独建模后，就不会污染全局身份真相。
 
 ## `managed_nodes_history`
 
@@ -103,7 +117,7 @@ flowchart TD
   - `Register()` 命中新旧 UUID 冲突时，归档旧 active 节点
 - 容易遗漏的自动维护链路：
   - 只有“同 `management_address` 被新 UUID 替换”才写，不是全量审计表
-  - 归档内容包含 `region/region_uuid`、`zone/zone_uuid`、`dns_*`、资源指标、监控快照、`archive_reason`、`replaced_by_uuid`
+  - 归档内容包含 `region/region_uuid`、`zone/zone_uuid`、`dns_*`、归档时的 home-region 健康快照、资源指标、`archive_reason`、`replaced_by_uuid`
 - 数据性质：区域运行态历史表
 - 最终建议策略：`区域本地化`
 - 理由：它依附 `managed_nodes` 生命周期，属于节点归属区的历史，不需要做全局强一致主写。
@@ -224,16 +238,17 @@ flowchart TD
 
 ### `AxisCore`
 
-- 包含：`regions`、`zones`、`dns_bindings`、`dns_binding_counters`
+- 包含：`regions`、`zones`、`managed_nodes`、`dns_bindings`、`dns_binding_counters`
 - 角色：亚洲权威真相层
 - 特征：
   - 低频主数据
+  - 节点身份与命名空间锚点
   - 全局唯一命名 / 序号分配
   - 不适合多区平级主写
 
 ### `AxisRuntime`
 
-- 包含：`managed_nodes`、`managed_nodes_history`、`routing_observations`
+- 包含：`node_health_by_region`、`managed_nodes_history`、`routing_observations`
 - 可扩展：`managed_node_metrics_ext`
 - 角色：区域本地运行态层
 - 特征：
@@ -259,7 +274,7 @@ flowchart TD
 - 不再继续使用单一 `AXIS.*` 整库复制语义
 - 建议升级为按逻辑组复制：
   - `AxisCore`：亚洲单向复制到北美/澳洲/欧洲
-  - `AxisRuntime`：区域本地化，不参与全区严格互联
+- `AxisRuntime`：区域本地化，不参与全区严格互联；`node_health_by_region` 与 `managed_node_metrics_ext` 都按区域主写
   - `AxisDerived`：亚洲单向复制到北美/澳洲/欧洲
 - DDL 仍应保持手工前置对齐，不依赖 TiCDC 传播
 
@@ -275,7 +290,7 @@ flowchart TD
 
 - `Axis` 后续应明确区分：
   - 主数据 / 命名权威访问走亚洲权威入口
-  - 节点心跳 / 观测写入走区域入口
+  - 节点心跳 / 健康写入走区域入口
   - 快照生成只在亚洲权威实例执行
 
 ---
@@ -284,7 +299,7 @@ flowchart TD
 
 `Axis` 不适合继续按 `AXIS.*` 整库一刀切地做全区多主热写。更合理的目标形态是：
 
-- `AxisCore`：亚洲权威写，负责静态主数据和全局唯一分配
-- `AxisRuntime`：区域本地化，负责节点运行态与观测累加
+- `AxisCore`：亚洲权威写，负责静态主数据、节点身份和全局唯一分配
+- `AxisRuntime`：区域本地化，负责节点健康、指标与观测累加
 - `AxisDerived`：亚洲单点生成，再向其他区复制
-- `managed_nodes` 主表只保留调度热路径需要的轻量字段；高频大字段应优先评估拆出到运行态扩展表
+- `managed_nodes` 主表只保留全局身份与命名空间字段；健康状态和高频指标由 `node_health_by_region` / `managed_node_metrics_ext` 承担
