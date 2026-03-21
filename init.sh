@@ -75,6 +75,13 @@ resolve_node_hostname() {
   return 1
 }
 
+detect_wt0_ipv4() {
+  if ! command -v ip >/dev/null 2>&1; then
+    return 1
+  fi
+  ip -o -4 addr show dev wt0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
+}
+
 extract_hostname_prefix() {
   local hostname_value="$1"
   printf '%s\n' "${hostname_value}" | awk -F- '{print toupper($1)}'
@@ -116,6 +123,7 @@ resolve_region_by_prefix() {
     $1 == "prefix_map:" { in_map = 1; next }
     in_map && $0 ~ /^  [A-Z0-9]+:$/ {
       if (entry == prefix && region != "") {
+        found = 1
         print region
         exit
       }
@@ -129,15 +137,65 @@ resolve_region_by_prefix() {
       next
     }
     END {
-      if (entry == prefix && region != "") {
+      if (!found && entry == prefix && region != "") {
         print region
       }
     }
   ' "${REGION_MAPPING_FILE}"
 }
 
+resolve_region_by_wt0_ip() {
+  local wt0_ip="$1"
+  python3 - "${ENV_FILE}" "${wt0_ip}" <<'PY'
+import pathlib, sys
+
+env_path = pathlib.Path(sys.argv[1])
+wt0_ip = sys.argv[2].strip()
+if not wt0_ip or not env_path.exists():
+    raise SystemExit(0)
+
+env = {}
+for line in env_path.read_text().splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    env[key.strip()] = value.strip().strip('"').strip("'")
+
+mapping = [
+    ("north_america", "AXIS_WT0_REGION_NORTH_AMERICA_PREFIXES"),
+    ("asia", "AXIS_WT0_REGION_ASIA_PREFIXES"),
+    ("australia", "AXIS_WT0_REGION_AUSTRALIA_PREFIXES"),
+    ("europe", "AXIS_WT0_REGION_EUROPE_PREFIXES"),
+    ("south_america", "AXIS_WT0_REGION_SOUTH_AMERICA_PREFIXES"),
+]
+
+for region, key in mapping:
+    raw = env.get(key, "")
+    prefixes = [item.strip() for item in raw.split(",") if item.strip()]
+    for prefix in prefixes:
+        if wt0_ip.startswith(prefix):
+            print(region)
+            raise SystemExit(0)
+PY
+}
+
 sync_local_region_from_mapping() {
-  local hostname_value prefix region
+  local hostname_value prefix region wt0_ip
+
+  wt0_ip="$(detect_wt0_ipv4 || true)"
+  if [[ -n "${wt0_ip}" ]]; then
+    region="$(resolve_region_by_wt0_ip "${wt0_ip}" || true)"
+    if [[ -n "${region}" && "${region}" != "null" ]]; then
+      echo -e "${YELLOW}Detected wt0 IPv4:${NC} ${wt0_ip}"
+      echo -e "${YELLOW}Updating AXIS_LOCAL_REGION in .env to:${NC} ${region}"
+      upsert_env_value "AXIS_LOCAL_REGION" "${region}"
+      return 0
+    fi
+    echo -e "${BLUE}wt0 IPv4 detected but no AXIS_WT0_REGION_* prefix matched; falling back to hostname mapping.${NC}"
+  else
+    echo -e "${BLUE}wt0 IPv4 not found; falling back to hostname mapping.${NC}"
+  fi
 
   if [[ ! -f "${REGION_MAPPING_FILE}" ]]; then
     echo -e "${BLUE}Region mapping file not found; keeping existing AXIS_LOCAL_REGION in .env.${NC}"

@@ -34,6 +34,19 @@ func nodeTokenMiddleware(authCfg config.AuthConfig, next http.HandlerFunc) http.
 	}
 }
 
+func internalTokenMiddleware(token string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		received := r.Header.Get("X-Axis-Internal-Token")
+		if !secureEqual(received, token) {
+			writeJSON(w, http.StatusUnauthorized, map[string]interface{}{
+				"error": "unauthorized",
+			})
+			return
+		}
+		next(w, r)
+	}
+}
+
 func secureEqual(left, right string) bool {
 	if len(left) != len(right) {
 		return false

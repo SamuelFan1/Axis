@@ -36,7 +36,7 @@ INSERT INTO node_health_by_region (
     last_seen_at,
     last_reported_at
 ) VALUES (
-    ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6)
+    ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?
 )
 ON DUPLICATE KEY UPDATE
     status = VALUES(status),

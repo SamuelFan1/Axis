@@ -10,22 +10,26 @@ import (
 )
 
 type Server struct {
-	address        string
-	authConfig     config.AuthConfig
-	nodeHandler    *NodeHandler
-	regionHandler  *RegionHandler
-	zoneHandler    *ZoneHandler
-	routingHandler *RoutingHandler
+	address            string
+	authConfig         config.AuthConfig
+	aggregationCfg     config.AggregationConfig
+	nodeHandler        *NodeHandler
+	regionHandler      *RegionHandler
+	zoneHandler        *ZoneHandler
+	routingHandler     *RoutingHandler
+	aggregationHandler *AggregationHandler
 }
 
-func NewServer(address string, authConfig config.AuthConfig, nodeService *service.NodeService, regionService *service.RegionService, zoneService *service.ZoneService, routingHandler *RoutingHandler) *Server {
+func NewServer(address string, authConfig config.AuthConfig, aggregationCfg config.AggregationConfig, nodeService *service.NodeService, regionService *service.RegionService, zoneService *service.ZoneService, routingHandler *RoutingHandler, aggregationHandler *AggregationHandler) *Server {
 	return &Server{
-		address:        address,
-		authConfig:     authConfig,
-		nodeHandler:    NewNodeHandler(nodeService),
-		regionHandler:  NewRegionHandler(regionService),
-		zoneHandler:    NewZoneHandler(zoneService),
-		routingHandler: routingHandler,
+		address:            address,
+		authConfig:         authConfig,
+		aggregationCfg:     aggregationCfg,
+		nodeHandler:        NewNodeHandler(nodeService),
+		regionHandler:      NewRegionHandler(regionService),
+		zoneHandler:        NewZoneHandler(zoneService),
+		routingHandler:     routingHandler,
+		aggregationHandler: aggregationHandler,
 	}
 }
 
@@ -49,6 +53,9 @@ func (s *Server) Run() error {
 		mux.HandleFunc("/api/v1/routing/snapshots/latest", adminAuthMiddleware(s.authConfig, s.routingHandler.LatestSnapshot))
 		mux.HandleFunc("/api/v1/routing/snapshots/generate", adminAuthMiddleware(s.authConfig, s.routingHandler.GenerateSnapshot))
 		mux.HandleFunc("/api/v1/routing/snapshots/", adminAuthMiddleware(s.authConfig, s.routingHandler.SnapshotByVersion))
+	}
+	if s.aggregationHandler != nil && s.aggregationCfg.CentralReceiverEnabled {
+		mux.HandleFunc("/api/v1/internal/aggregation/regional-snapshots", internalTokenMiddleware(s.aggregationCfg.SharedToken, s.aggregationHandler.IngestRegionalSnapshot))
 	}
 
 	log.Printf("axisd listening on %s", s.address)

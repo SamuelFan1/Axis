@@ -394,6 +394,7 @@ cp .env.example .env
 - `AXIS_REGIONS`：大洲列表，默认 `asia,europe,australia,north_america,south_america`
 - `AXIS_LOCAL_REGION`：当前这台 `axisd` 所属区域，用于写入本区 `node_health_by_region`、执行本区超时下线，以及选择本区健康口径
 - `AXIS_REGION_ASIA_ZONES`、`AXIS_REGION_EUROPE_ZONES` 等：各大洲允许的 zone（国家代码），逗号分隔
+- `AXIS_WT0_REGION_NORTH_AMERICA_PREFIXES`、`AXIS_WT0_REGION_ASIA_PREFIXES` 等：`init.sh` 用于根据 `wt0` IPv4 前缀自动回填 `AXIS_LOCAL_REGION` 的可选配置
 - 建议只在权威区域先创建标准 `regions` 与 `zones`，再通过 `AXIS` 同步扩散到其他区域
 - 不在 `AXIS_REGIONS` 或对应 `AXIS_REGION_*_ZONES` 中的值不应被创建为主数据
 
@@ -407,7 +408,9 @@ go run ./cmd/axisd
 
 ```bash
 # 首次部署或后续更新（脚本会先停止 axisd.service，
-# 再替换 axisd/axis 二进制与 unit，最后重新启动）
+# 再替换 axisd/axis 二进制与 unit，最后重新启动；
+# 如果检测到 wt0 网卡，会优先按 .env 中的 AXIS_WT0_REGION_* 前缀规则
+# 自动同步 AXIS_LOCAL_REGION；若未命中，则回退到 hostname 前缀映射）
 cd /apps/Axis
 ./init.sh
 ```
@@ -524,6 +527,46 @@ AXIS_LOCAL_REGION=asia
 
 **重新纳管时不再按 `management_address` 复用旧 UUID**。如果同一地址上报了新的 `UUID`，旧节点会被归档到历史表，新节点会以新身份进入 active 集合。
 
+如果启用了全局一致读模型聚合模块，还需要额外遵守一条边界：
+
+- 各区域 `axisd` 继续只负责写本区运行态
+- 所有 `service-list / service-show / assign / routing snapshot` 相关读路径统一读取亚洲中心聚合结果
+- 因为这是最终一致模型，所以允许秒级到分钟级延迟，不再要求各区本地运行态立即完全一致
+- `AXIS_LOCAL_REGION` 仍然只代表“本区写入身份”，不代表它一定是聚合中心或快照发布中心
+
+## 可选全局一致读模型模块
+
+当你希望所有区域执行 `axis service-list`、`axis service-show`、`assign` 和 Worker 路由时都看到同一份结果，可以启用聚合模块。
+
+工作方式：
+
+- 各区域先发布本区节点状态快照到中心
+- 亚洲中心接收这些快照并生成统一读模型
+- 所有展示、调度和路由输入统一读取中心聚合表，而不是直接读取本区 `node_health_by_region`
+
+配置项：
+
+- `AXIS_AGGREGATION_ENABLED`
+- `AXIS_AGGREGATION_REGIONAL_PUBLISHER_ENABLED`
+- `AXIS_AGGREGATION_CENTRAL_RECEIVER_ENABLED`
+- `AXIS_AGGREGATION_CENTRAL_AGGREGATOR_ENABLED`
+- `AXIS_AGGREGATION_CENTER_API_URL`
+- `AXIS_AGGREGATION_SHARED_TOKEN`
+- `AXIS_AGGREGATION_PUBLISH_INTERVAL_SEC`
+- `AXIS_AGGREGATION_STALE_AFTER_SEC`
+
+启用建议：
+
+- 亚洲中心：
+  - 开启 `AXIS_AGGREGATION_ENABLED=true`
+  - 开启 `AXIS_AGGREGATION_CENTRAL_RECEIVER_ENABLED=true`
+  - 开启 `AXIS_AGGREGATION_CENTRAL_AGGREGATOR_ENABLED=true`
+- 其他区域：
+  - 开启 `AXIS_AGGREGATION_ENABLED=true`
+  - 开启 `AXIS_AGGREGATION_REGIONAL_PUBLISHER_ENABLED=true`
+  - 指向亚洲 `AXIS_AGGREGATION_CENTER_API_URL`
+- 如果只想先影子验证，可先开启聚合写入和中心聚合，但暂时不把线上读路径切到聚合结果
+
 ## 可选 DNS 模块
 
 Axis 可在 node 首次成功上报 `public_ip` 后，自动为该 node 分配稳定的子域名并写入 DNS 解析。
@@ -626,6 +669,7 @@ GET /api/v1/nodes/{uuid}/monitoring
 - `AXIS_ROUTING_ENABLED=false` 时，Axis 不会初始化 routing 观测、快照、发布相关能力
 - 只有 `AXIS_ROUTING_PUBLISHER_ENABLED=true` 时，当前实例才允许向 Cloudflare KV 发布快照
 - 多实例部署时必须只让一个权威发布者开启 publisher 开关
+- 如果启用了全局一致读模型，routing snapshot 会优先读取中心聚合后的节点状态，再结合观测生成候选集
 
 ## CLI 管理命令
 
@@ -663,6 +707,11 @@ axis service-list
 
 输出摘要字段：`UUID`、`HOSTNAME`、`INTERNAL_IP`、`PUBLIC_IP`、`DNS_NAME`、`STATUS`、`REGION`、`ZONE`。
 
+说明：
+
+- 未启用聚合模块时，`service-list` 读取的是当前区域本地读模型，跨区域结果可能不同
+- 启用聚合模块后，`service-list` 读取的是亚洲中心聚合表 `aggregated_node_status`，各区域输出应最终收敛一致
+
 验证：执行 `axis service-list` 与 `axis service-show <uuid>`，确认资源指标（CPU cores、内存 GB、Swap GB、磁盘明细）带单位正常显示。
 
 ### 查看单台服务器
@@ -677,6 +726,10 @@ axis service-show <uuid>
 - 内存/Swap 总量、已用、使用率
 - 全部磁盘挂载点明细（MOUNT_POINT、FILESYSTEM、TOTAL_GB、USED_GB、USAGE_PERCENT）
 - `last_seen_at`、`last_reported_at`
+
+说明：
+
+- 启用聚合模块后，`service-show` 返回的是中心聚合后的最终状态，不再直接等同于本机本区数据库中的 `node_health_by_region`
 
 ### 查看节点监控快照
 

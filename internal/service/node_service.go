@@ -20,7 +20,8 @@ import (
 type NodeService struct {
 	identityRepo   repository.NodeIdentityRepository
 	healthRepo     repository.NodeHealthRepository
-	viewRepo       repository.NodeViewRepository
+	localViewRepo  repository.NodeViewRepository
+	globalViewRepo repository.AggregatedNodeRepository
 	regionRepo     repository.RegionRepository
 	zoneRepo       repository.ZoneRepository
 	dnsProvider    platformdns.Provider
@@ -36,11 +37,12 @@ type NodeStatusResult struct {
 	WorkerSynced        bool
 }
 
-func NewNodeService(identityRepo repository.NodeIdentityRepository, healthRepo repository.NodeHealthRepository, viewRepo repository.NodeViewRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsBindingRepo repository.DNSBindingRepository, dnsConfig config.DNSConfig, regionConfig config.RegionConfig, workerAdmin workeradmin.Client) *NodeService {
+func NewNodeService(identityRepo repository.NodeIdentityRepository, healthRepo repository.NodeHealthRepository, localViewRepo repository.NodeViewRepository, globalViewRepo repository.AggregatedNodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsBindingRepo repository.DNSBindingRepository, dnsConfig config.DNSConfig, regionConfig config.RegionConfig, workerAdmin workeradmin.Client) *NodeService {
 	return &NodeService{
 		identityRepo:   identityRepo,
 		healthRepo:     healthRepo,
-		viewRepo:       viewRepo,
+		localViewRepo:  localViewRepo,
+		globalViewRepo: globalViewRepo,
 		regionRepo:     regionRepo,
 		zoneRepo:       zoneRepo,
 		dnsProvider:    dnsProvider,
@@ -141,6 +143,7 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 		RegionUUID:        item.RegionUUID,
 		Zone:              item.Zone,
 		ZoneUUID:          item.ZoneUUID,
+		Status:            item.Status,
 		CreatedAt:         item.CreatedAt,
 		UpdatedAt:         item.UpdatedAt,
 	}); err != nil {
@@ -150,7 +153,7 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 }
 
 func (s *NodeService) List(ctx context.Context) ([]node.Node, error) {
-	return s.viewRepo.List(ctx)
+	return s.readViewRepo().List(ctx)
 }
 
 func (s *NodeService) GetByUUID(ctx context.Context, uuidValue string) (node.Node, error) {
@@ -162,7 +165,7 @@ func (s *NodeService) GetByUUID(ctx context.Context, uuidValue string) (node.Nod
 		return node.Node{}, fmt.Errorf("uuid must be a valid UUID")
 	}
 
-	item, err := s.viewRepo.FindByUUID(ctx, uuidValue)
+	item, err := s.readViewRepo().FindByUUID(ctx, uuidValue)
 	if err != nil {
 		return node.Node{}, err
 	}
@@ -205,7 +208,7 @@ func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status st
 		return NodeStatusResult{}, fmt.Errorf("status must be up or down")
 	}
 
-	item, err := s.viewRepo.FindByUUID(ctx, uuidValue)
+	item, err := s.readViewRepo().FindByUUID(ctx, uuidValue)
 	if err != nil {
 		return NodeStatusResult{}, err
 	}
@@ -238,11 +241,11 @@ func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status st
 }
 
 func (s *NodeService) ListRegions(ctx context.Context) ([]node.RegionSummary, error) {
-	return s.viewRepo.ListRegions(ctx)
+	return s.readViewRepo().ListRegions(ctx)
 }
 
 func (s *NodeService) ListRegionZones(ctx context.Context) ([]node.RegionZoneSummary, error) {
-	return s.viewRepo.ListRegionZones(ctx)
+	return s.readViewRepo().ListRegionZones(ctx)
 }
 
 func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zone string) (node.Node, error) {
@@ -259,7 +262,7 @@ func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zon
 		return node.Node{}, err
 	}
 
-	items, err := s.viewRepo.List(ctx)
+	items, err := s.readViewRepo().List(ctx)
 	if err != nil {
 		return node.Node{}, err
 	}
@@ -392,7 +395,7 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 		return node.Node{}, err
 	}
 
-	updated, err := s.viewRepo.FindByUUID(ctx, item.UUID)
+	updated, err := s.localViewRepo.FindByUUID(ctx, item.UUID)
 	if err != nil {
 		return node.Node{}, err
 	}
@@ -414,11 +417,21 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 }
 
 func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue string) (json.RawMessage, error) {
+	if s.globalViewRepo != nil {
+		return s.globalViewRepo.GetMonitoringSnapshot(ctx, uuidValue)
+	}
 	snapshot, err := s.healthRepo.GetMonitoringSnapshot(ctx, uuidValue)
 	if err != nil {
 		return nil, err
 	}
 	return snapshot, nil
+}
+
+func (s *NodeService) readViewRepo() repository.NodeViewRepository {
+	if s.globalViewRepo != nil {
+		return s.globalViewRepo
+	}
+	return s.localViewRepo
 }
 
 func (s *NodeService) ensureCentralDNSBinding(ctx context.Context, item *node.Node) (node.Node, error) {

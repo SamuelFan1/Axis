@@ -9,6 +9,7 @@ import (
 	platformdns "github.com/SamuelFan1/Axis/internal/platform/dns"
 	platformrouting "github.com/SamuelFan1/Axis/internal/platform/routingpublish"
 	"github.com/SamuelFan1/Axis/internal/platform/workeradmin"
+	"github.com/SamuelFan1/Axis/internal/repository"
 	"github.com/SamuelFan1/Axis/internal/repository/mysql"
 	"github.com/SamuelFan1/Axis/internal/service"
 	httptransport "github.com/SamuelFan1/Axis/internal/transport/http"
@@ -30,6 +31,9 @@ func main() {
 	nodeRepo := mysql.NewNodeRepository(dbs.Runtime)
 	regionRepo := mysql.NewRegionRepository(dbs.Core)
 	zoneRepo := mysql.NewZoneRepository(dbs.Core)
+	var aggregatedRepo *mysql.AggregatedNodeRepository
+	var aggregationHandler *httptransport.AggregationHandler
+	ctx := context.Background()
 
 	dnsProvider := platformdns.NewNoopProvider()
 	var dnsBindingRepo *mysql.DNSBindingRepository
@@ -40,8 +44,31 @@ func main() {
 	workerAdminClient := workeradmin.NewClient(cfg.WorkerAdmin)
 	regionService := service.NewRegionService(regionRepo, nodeRepo, zoneRepo, cfg.Region)
 	zoneService := service.NewZoneService(zoneRepo, regionRepo, nodeRepo, nodeRepo, cfg.Region)
-	nodeService := service.NewNodeService(nodeRepo, nodeRepo, nodeRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
-	ctx := context.Background()
+	if cfg.Aggregation.Enabled {
+		snapshotInboxRepo := mysql.NewRegionalNodeStatusSnapshotRepository(dbs.Derived)
+		aggregatedRepo = mysql.NewAggregatedNodeRepository(dbs.Derived)
+		if cfg.App.AutoSchemaUpgrade {
+			if err := snapshotInboxRepo.EnsureSchema(ctx); err != nil {
+				log.Fatalf("ensure aggregation snapshot schema: %v", err)
+			}
+			if err := aggregatedRepo.EnsureSchema(ctx); err != nil {
+				log.Fatalf("ensure aggregation view schema: %v", err)
+			}
+		}
+		if cfg.Aggregation.CentralReceiverEnabled {
+			aggregationHandler = httptransport.NewAggregationHandler(snapshotInboxRepo)
+		}
+		if cfg.Aggregation.CentralAggregatorEnabled {
+			aggregatedNodeService := service.NewAggregatedNodeService(nodeRepo, snapshotInboxRepo, aggregatedRepo, cfg.Aggregation.StaleAfterSec)
+			go worker.NewGlobalNodeAggregator(aggregatedNodeService, cfg.Aggregation.PublishIntervalSec).Run()
+		}
+		if cfg.Aggregation.RegionalPublisherEnabled {
+			regionalSnapshotService := service.NewRegionalStatusSnapshotService(nodeRepo, cfg.Region.LocalRegion)
+			sink := httptransport.NewRegionalSnapshotPublisherClient(cfg.Aggregation)
+			go worker.NewRegionalStatusSnapshotPublisher(regionalSnapshotService, sink, cfg.Aggregation.PublishIntervalSec).Run()
+		}
+	}
+	nodeService := service.NewNodeService(nodeRepo, nodeRepo, nodeRepo, aggregatedRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
 	if cfg.App.AutoSchemaUpgrade {
 		if err := regionRepo.EnsureSchema(ctx); err != nil {
 			log.Fatalf("ensure region schema: %v", err)
@@ -119,7 +146,11 @@ func main() {
 
 		var snapshotService *service.RoutingSnapshotService
 		if cfg.Routing.SnapshotEnabled {
-			snapshotService = service.NewRoutingSnapshotService(observationRepo, snapshotRepo, nodeRepo, regionRepo, zoneRepo, cfg.Routing)
+			var nodeViewRepo repository.NodeViewRepository = nodeRepo
+			if aggregatedRepo != nil {
+				nodeViewRepo = aggregatedRepo
+			}
+			snapshotService = service.NewRoutingSnapshotService(observationRepo, snapshotRepo, nodeViewRepo, regionRepo, zoneRepo, cfg.Routing)
 		}
 
 		publisher := platformrouting.NewNoopPublisher()
@@ -148,7 +179,7 @@ func main() {
 	)
 	go nodeMonitor.Run()
 
-	server := httptransport.NewServer(cfg.App.HTTPAddress, cfg.Auth, nodeService, regionService, zoneService, routingHandler)
+	server := httptransport.NewServer(cfg.App.HTTPAddress, cfg.Auth, cfg.Aggregation, nodeService, regionService, zoneService, routingHandler, aggregationHandler)
 	if err := server.Run(); err != nil {
 		log.Fatalf("run http server: %v", err)
 	}

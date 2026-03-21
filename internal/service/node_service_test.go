@@ -81,6 +81,7 @@ func (r *stubNodeRepository) UpsertIdentity(ctx context.Context, item node.NodeI
 	existing.RegionUUID = item.RegionUUID
 	existing.Zone = item.Zone
 	existing.ZoneUUID = item.ZoneUUID
+	existing.Status = item.Status
 	r.nodes[item.UUID] = existing
 	return nil
 }
@@ -233,6 +234,7 @@ func identityFromNode(item node.Node) node.NodeIdentity {
 		RegionUUID:        item.RegionUUID,
 		Zone:              item.Zone,
 		ZoneUUID:          item.ZoneUUID,
+		Status:            item.Status,
 		CreatedAt:         item.CreatedAt,
 		UpdatedAt:         item.UpdatedAt,
 	}
@@ -357,11 +359,11 @@ func (c *stubWorkerAdminClient) EnableNode(ctx context.Context, originLabel stri
 
 func newTestNodeService(items []node.Node) *NodeService {
 	return &NodeService{
-		viewRepo:     &stubNodeRepository{items: items},
-		identityRepo: &stubNodeRepository{items: items},
-		healthRepo:   &stubNodeRepository{items: items},
-		regionRepo:   &stubRegionRepository{},
-		zoneRepo:     &stubZoneRepository{},
+		localViewRepo: &stubNodeRepository{items: items},
+		identityRepo:  &stubNodeRepository{items: items},
+		healthRepo:    &stubNodeRepository{items: items},
+		regionRepo:    &stubRegionRepository{},
+		zoneRepo:      &stubZoneRepository{},
 		regionConfig: config.RegionConfig{
 			Regions: []string{"asia", "europe"},
 			RegionZones: map[string][]string{
@@ -490,6 +492,7 @@ func newDNSNodeService(repo *stubNodeRepository, bindingRepo *stubDNSBindingRepo
 		repo,
 		repo,
 		repo,
+		nil,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
 		provider,
@@ -544,6 +547,7 @@ func newPolicyNodeService(repo *stubNodeRepository, requireTunnel bool) *NodeSer
 		repo,
 		repo,
 		repo,
+		nil,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
 		nil,
@@ -575,6 +579,7 @@ func TestSetStatusDisablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testin
 		repo,
 		repo,
 		repo,
+		nil,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
 		nil,
@@ -615,6 +620,7 @@ func TestSetStatusEnablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testing
 		repo,
 		repo,
 		repo,
+		nil,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
 		nil,
@@ -650,6 +656,7 @@ func TestSetStatusReturnsWorkerAdminError(t *testing.T) {
 		repo,
 		repo,
 		repo,
+		nil,
 		&stubRegionRepository{},
 		&stubZoneRepository{},
 		nil,
@@ -978,5 +985,50 @@ func TestRegisterReplacesOldActiveNodeWhenManagementAddressMatchesNewUUID(t *tes
 	}
 	if repo.archiveCalls[0].ReplacedByUUID != testNodeUUID {
 		t.Fatalf("expected archive replacement uuid %s, got %s", testNodeUUID, repo.archiveCalls[0].ReplacedByUUID)
+	}
+}
+
+func TestRegisterDefaultsEmptyStatusToUp(t *testing.T) {
+	repo := newDNSRepository()
+	svc := newDNSNodeService(repo, &stubDNSBindingRepository{}, nil)
+
+	registered, err := svc.Register(context.Background(), node.Node{
+		UUID:              testNodeUUID,
+		Hostname:          "node-new",
+		ManagementAddress: "10.0.0.2:9090",
+		Region:            "asia",
+		Zone:              "SG",
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	if registered.Status != node.StatusUp {
+		t.Fatalf("expected registered status %s, got %s", node.StatusUp, registered.Status)
+	}
+	if repo.nodes[testNodeUUID].Status != node.StatusUp {
+		t.Fatalf("expected persisted status %s, got %s", node.StatusUp, repo.nodes[testNodeUUID].Status)
+	}
+}
+
+func TestRegisterPreservesExplicitDownStatus(t *testing.T) {
+	repo := newDNSRepository()
+	svc := newDNSNodeService(repo, &stubDNSBindingRepository{}, nil)
+
+	registered, err := svc.Register(context.Background(), node.Node{
+		UUID:              testNodeUUID,
+		Hostname:          "node-down",
+		ManagementAddress: "10.0.0.3:9090",
+		Region:            "asia",
+		Zone:              "SG",
+		Status:            node.StatusDown,
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	if registered.Status != node.StatusDown {
+		t.Fatalf("expected registered status %s, got %s", node.StatusDown, registered.Status)
+	}
+	if repo.nodes[testNodeUUID].Status != node.StatusDown {
+		t.Fatalf("expected persisted status %s, got %s", node.StatusDown, repo.nodes[testNodeUUID].Status)
 	}
 }

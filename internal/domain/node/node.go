@@ -30,6 +30,7 @@ type NodeIdentity struct {
 	RegionUUID        string    `json:"region_uuid,omitempty"`
 	Zone              string    `json:"zone"`
 	ZoneUUID          string    `json:"zone_uuid,omitempty"`
+	Status            string    `json:"status"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }

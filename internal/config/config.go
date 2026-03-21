@@ -16,6 +16,7 @@ type Config struct {
 	DerivedDB   DBConfig
 	DNS         DNSConfig
 	Routing     RoutingConfig
+	Aggregation AggregationConfig
 	WorkerAdmin WorkerAdminConfig
 	Region      RegionConfig
 }
@@ -85,6 +86,17 @@ type RoutingConfig struct {
 	CloudflareKVNamespaceID string
 }
 
+type AggregationConfig struct {
+	Enabled                  bool
+	RegionalPublisherEnabled bool
+	CentralReceiverEnabled   bool
+	CentralAggregatorEnabled bool
+	CenterAPIURL             string
+	SharedToken              string
+	PublishIntervalSec       int
+	StaleAfterSec            int
+}
+
 type WorkerAdminConfig struct {
 	WorkerURL         string
 	WorkerAdminSecret string
@@ -134,6 +146,16 @@ func Load() (*Config, error) {
 			CloudflareAccountID:     strings.TrimSpace(getEnv("AXIS_ROUTING_CF_ACCOUNT_ID", "")),
 			CloudflareAPIToken:      getEnv("AXIS_ROUTING_CF_API_TOKEN", ""),
 			CloudflareKVNamespaceID: strings.TrimSpace(getEnv("AXIS_ROUTING_CF_KV_NAMESPACE_ID", "")),
+		},
+		Aggregation: AggregationConfig{
+			Enabled:                  getEnvBool("AXIS_AGGREGATION_ENABLED", false),
+			RegionalPublisherEnabled: getEnvBool("AXIS_AGGREGATION_REGIONAL_PUBLISHER_ENABLED", false),
+			CentralReceiverEnabled:   getEnvBool("AXIS_AGGREGATION_CENTRAL_RECEIVER_ENABLED", false),
+			CentralAggregatorEnabled: getEnvBool("AXIS_AGGREGATION_CENTRAL_AGGREGATOR_ENABLED", false),
+			CenterAPIURL:             strings.TrimRight(strings.TrimSpace(getEnv("AXIS_AGGREGATION_CENTER_API_URL", "")), "/"),
+			SharedToken:              strings.TrimSpace(getEnv("AXIS_AGGREGATION_SHARED_TOKEN", "")),
+			PublishIntervalSec:       getEnvInt("AXIS_AGGREGATION_PUBLISH_INTERVAL_SEC", 15),
+			StaleAfterSec:            getEnvInt("AXIS_AGGREGATION_STALE_AFTER_SEC", 90),
 		},
 		WorkerAdmin: WorkerAdminConfig{
 			WorkerURL:         strings.TrimSpace(getEnv("AXIS_WORKER_URL", "")),
@@ -244,6 +266,27 @@ func Load() (*Config, error) {
 		if cfg.Routing.CloudflareKVNamespaceID == "" {
 			return nil, fmt.Errorf("AXIS_ROUTING_CF_KV_NAMESPACE_ID must be set when AXIS_ROUTING_PUBLISHER_ENABLED is true")
 		}
+	}
+
+	if cfg.Aggregation.PublishIntervalSec <= 0 {
+		cfg.Aggregation.PublishIntervalSec = 15
+	}
+	if cfg.Aggregation.StaleAfterSec <= 0 {
+		cfg.Aggregation.StaleAfterSec = 90
+	}
+	if !cfg.Aggregation.Enabled {
+		if cfg.Aggregation.RegionalPublisherEnabled || cfg.Aggregation.CentralReceiverEnabled || cfg.Aggregation.CentralAggregatorEnabled {
+			return nil, fmt.Errorf("AXIS_AGGREGATION_ENABLED must be true when aggregation subfeatures are enabled")
+		}
+		return cfg, nil
+	}
+	if cfg.Aggregation.RegionalPublisherEnabled || cfg.Aggregation.CentralReceiverEnabled {
+		if strings.TrimSpace(cfg.Aggregation.SharedToken) == "" {
+			return nil, fmt.Errorf("AXIS_AGGREGATION_SHARED_TOKEN must be set when aggregation publish/receive is enabled")
+		}
+	}
+	if cfg.Aggregation.RegionalPublisherEnabled && strings.TrimSpace(cfg.Aggregation.CenterAPIURL) == "" {
+		return nil, fmt.Errorf("AXIS_AGGREGATION_CENTER_API_URL must be set when AXIS_AGGREGATION_REGIONAL_PUBLISHER_ENABLED is true")
 	}
 
 	return cfg, nil

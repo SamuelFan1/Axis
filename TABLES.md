@@ -7,7 +7,7 @@
 
 - `AxisCore`：静态主数据与全局唯一分配表
 - `AxisRuntime`：区域本地热写与节点运行态
-- `AxisDerived`：单点生成、全区复制的派生产物
+- `AxisDerived`：中心接收、聚合生成与单点派生的只读产物
 
 ## 目标数据平面
 
@@ -29,12 +29,14 @@ flowchart TD
     end
 
     subgraph axisDerived [AxisDerived]
+        regionalNodeStatusSnapshots[regional_node_status_snapshots]
+        aggregatedNodeStatus[aggregated_node_status]
         routingSnapshotManifests[routing_snapshot_manifests]
         routingSnapshotBundles[routing_snapshot_bundles]
     end
 
     axisCore -->|"relation anchors"| axisRuntime
-    axisRuntime -->|"node state + observations"| axisDerived
+    axisRuntime -->|"regional snapshots + observations"| axisDerived
     axisCore -->|"authority data"| axisDerived
 ```
 
@@ -50,6 +52,8 @@ flowchart TD
 | `node_health_by_region` | `AxisRuntime` | 区域健康表 | 区域本地化 |
 | `managed_nodes_history` | `AxisRuntime` | 区域运行态历史 | 区域本地化 |
 | `routing_observations` | `AxisRuntime` | 区域观测累加表 | 区域本地化 |
+| `regional_node_status_snapshots` | `AxisDerived` | 区域快照接收层 | 各区发布到亚洲中心 |
+| `aggregated_node_status` | `AxisDerived` | 全局一致读模型 | 亚洲中心聚合生成 + 全区只读 |
 | `routing_snapshot_manifests` | `AxisDerived` | 单权威派生产物 | 亚洲单点生成 + 全区复制 |
 | `routing_snapshot_bundles` | `AxisDerived` | 单权威派生产物 | 亚洲单点生成 + 全区复制 |
 
@@ -202,6 +206,38 @@ flowchart TD
 - 最终建议策略：`区域本地化`
 - 理由：观测值天然带地域性，多区同时对同一主键累加会放大冲突；更适合按采集区写、本地消费或后续聚合。
 
+## `regional_node_status_snapshots`
+
+- 表功能：亚洲中心接收各区域最新节点状态快照的中转表。
+- 主键 / 关键唯一约束：
+  - 主键：`source_region, node_uuid`
+- 主要写入来源：
+  - 区域快照发布 worker
+  - 内部接收接口 `POST /api/v1/internal/aggregation/regional-snapshots`
+- 容易遗漏的自动维护链路：
+  - 这是“区域发布到中心”的接收层，不是最终展示真相
+  - 允许各区域按自己的写入节奏覆盖同一 `source_region` 下的最新快照
+  - 为 `aggregated_node_status` 提供 home-region 状态输入
+- 数据性质：区域快照接收层
+- 最终建议策略：`各区发布到亚洲中心`
+- 理由：它承接的是区域运行态的中心副本，目标是为后续聚合服务，而不是替代本地运行态表。
+
+## `aggregated_node_status`
+
+- 表功能：所有展示、调度、路由相关读路径统一读取的全局一致读模型。
+- 主键 / 关键唯一约束：
+  - 主键：`node_uuid`
+- 主要写入来源：
+  - 中心聚合 worker
+- 容易遗漏的自动维护链路：
+  - 节点身份字段来自 `managed_nodes`
+  - 节点最终状态只采纳 `home_region` 的最新快照
+  - `stale=true` 时即使原始状态为 `up`，最终也可以降级为 `down`
+  - `service-list` / `service-show` / `assign` / routing snapshot 读的都应该是这张表
+- 数据性质：全局一致读模型
+- 最终建议策略：`亚洲中心聚合生成 + 全区只读`
+- 理由：它不参与各区运行态主写，只负责把“分区写入的局部真相”收敛成“全局统一展示真相”。
+
 ## `routing_snapshot_manifests`
 
 - 表功能：每次路由快照的总清单，保存版本、TTL、全局/区域/zone 候选引用。
@@ -258,10 +294,11 @@ flowchart TD
 
 ### `AxisDerived`
 
-- 包含：`routing_snapshot_manifests`、`routing_snapshot_bundles`
-- 角色：亚洲单点生成派生层
+- 包含：`regional_node_status_snapshots`、`aggregated_node_status`、`routing_snapshot_manifests`、`routing_snapshot_bundles`
+- 角色：亚洲中心接收与单点派生层
 - 特征：
   - 输入依赖 `AxisCore + AxisRuntime`
+  - 先接收各区域发布的快照，再聚合生成全局一致读模型
   - 产物适合全区只读消费
   - 不适合多 publisher 并发生成
 
@@ -275,7 +312,7 @@ flowchart TD
 - 建议升级为按逻辑组复制：
   - `AxisCore`：亚洲单向复制到北美/澳洲/欧洲
 - `AxisRuntime`：区域本地化，不参与全区严格互联；`node_health_by_region` 与 `managed_node_metrics_ext` 都按区域主写
-  - `AxisDerived`：亚洲单向复制到北美/澳洲/欧洲
+  - `AxisDerived`：亚洲接收各区快照并生成聚合表，再单向复制到北美/澳洲/欧洲
 - DDL 仍应保持手工前置对齐，不依赖 TiCDC 传播
 
 ### HAProxy
@@ -301,5 +338,5 @@ flowchart TD
 
 - `AxisCore`：亚洲权威写，负责静态主数据、节点身份和全局唯一分配
 - `AxisRuntime`：区域本地化，负责节点健康、指标与观测累加
-- `AxisDerived`：亚洲单点生成，再向其他区复制
+- `AxisDerived`：亚洲中心先接收各区快照并生成 `aggregated_node_status`，再把统一读模型与 routing 派生产物向其他区复制
 - `managed_nodes` 主表只保留全局身份与命名空间字段；健康状态和高频指标由 `node_health_by_region` / `managed_node_metrics_ext` 承担

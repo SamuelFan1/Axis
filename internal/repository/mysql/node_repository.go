@@ -248,9 +248,9 @@ func (r *NodeRepository) UpsertIdentity(ctx context.Context, item node.NodeIdent
 	// while region_uuid/zone_uuid act as relational anchors to static master data.
 	const query = `
 INSERT INTO managed_nodes (
-    uuid, hostname, management_address, internal_ip, public_ip, region, region_uuid, zone, zone_uuid, created_at, updated_at
+    uuid, hostname, management_address, internal_ip, public_ip, region, region_uuid, zone, zone_uuid, status, created_at, updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6)
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6)
 )
 ON DUPLICATE KEY UPDATE
     hostname = VALUES(hostname),
@@ -275,6 +275,7 @@ ON DUPLICATE KEY UPDATE
 		nullString(item.RegionUUID),
 		item.Zone,
 		nullString(item.ZoneUUID),
+		item.Status,
 	); err != nil {
 		return fmt.Errorf("upsert managed node identity: %w", err)
 	}
