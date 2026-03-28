@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"reflect"
 	"strings"
 
 	"github.com/SamuelFan1/Axis/internal/config"
@@ -417,7 +418,7 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 }
 
 func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue string) (json.RawMessage, error) {
-	if s.globalViewRepo != nil {
+	if hasRepositoryValue(s.globalViewRepo) {
 		return s.globalViewRepo.GetMonitoringSnapshot(ctx, uuidValue)
 	}
 	snapshot, err := s.healthRepo.GetMonitoringSnapshot(ctx, uuidValue)
@@ -428,10 +429,23 @@ func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue strin
 }
 
 func (s *NodeService) readViewRepo() repository.NodeViewRepository {
-	if s.globalViewRepo != nil {
+	if hasRepositoryValue(s.globalViewRepo) {
 		return s.globalViewRepo
 	}
 	return s.localViewRepo
+}
+
+func hasRepositoryValue(repo interface{}) bool {
+	if repo == nil {
+		return false
+	}
+	value := reflect.ValueOf(repo)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return !value.IsNil()
+	default:
+		return true
+	}
 }
 
 func (s *NodeService) ensureCentralDNSBinding(ctx context.Context, item *node.Node) (node.Node, error) {

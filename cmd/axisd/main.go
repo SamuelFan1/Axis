@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 
 	"github.com/SamuelFan1/Axis/internal/bootstrap"
@@ -28,7 +29,7 @@ func main() {
 	}
 	defer dbs.Close()
 
-	nodeRepo := mysql.NewNodeRepository(dbs.Runtime)
+	nodeRepo := mysql.NewNodeRepository(dbs.Core, dbs.Runtime)
 	regionRepo := mysql.NewRegionRepository(dbs.Core)
 	zoneRepo := mysql.NewZoneRepository(dbs.Core)
 	var aggregatedRepo *mysql.AggregatedNodeRepository
@@ -66,6 +67,11 @@ func main() {
 			regionalSnapshotService := service.NewRegionalStatusSnapshotService(nodeRepo, cfg.Region.LocalRegion)
 			sink := httptransport.NewRegionalSnapshotPublisherClient(cfg.Aggregation)
 			go worker.NewRegionalStatusSnapshotPublisher(regionalSnapshotService, sink, cfg.Aggregation.PublishIntervalSec).Run()
+		}
+		if !cfg.App.AutoSchemaUpgrade {
+			if err := requireTables(ctx, dbs.Derived, "platform_derived", "regional_node_status_snapshots", "aggregated_node_status"); err != nil {
+				log.Fatalf("aggregation enabled but derived schema is incomplete: %v", err)
+			}
 		}
 	}
 	nodeService := service.NewNodeService(nodeRepo, nodeRepo, nodeRepo, aggregatedRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
@@ -193,4 +199,25 @@ func maxInt(items ...int) int {
 		}
 	}
 	return best
+}
+
+func requireTables(ctx context.Context, db *sql.DB, schema string, tableNames ...string) error {
+	for _, tableName := range tableNames {
+		var count int
+		if err := db.QueryRowContext(
+			ctx,
+			`SELECT COUNT(1)
+			 FROM information_schema.tables
+			 WHERE table_schema = ?
+			   AND table_name = ?`,
+			schema,
+			tableName,
+		).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			return sql.ErrNoRows
+		}
+	}
+	return nil
 }

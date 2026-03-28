@@ -44,7 +44,7 @@ ON DUPLICATE KEY UPDATE
     updated_at = CURRENT_TIMESTAMP(6),
     last_seen_at = CURRENT_TIMESTAMP(6),
     last_reported_at = VALUES(last_reported_at)`
-	if _, err := r.db.ExecContext(
+	if _, err := r.runtimeDB.ExecContext(
 		ctx,
 		query,
 		item.ObserverRegion,
@@ -109,7 +109,7 @@ func (r *NodeRepository) MarkTimedOutNodesDown(ctx context.Context, localRegion 
 		 WHERE observer_region = ?
 		   AND status <> 'down'
 		   AND COALESCE(last_reported_at, last_seen_at) < DATE_SUB(CURRENT_TIMESTAMP(6), INTERVAL ? SECOND)`
-	result, err := r.db.ExecContext(ctx, query, localRegion, timeoutSec)
+	result, err := r.runtimeDB.ExecContext(ctx, query, localRegion, timeoutSec)
 	if err != nil {
 		return 0, fmt.Errorf("mark timed out node health down: %w", err)
 	}
@@ -195,7 +195,7 @@ func (r *NodeRepository) loadHomeHealthByNodeUUIDs(ctx context.Context, identiti
     last_reported_at
 FROM node_health_by_region
 WHERE node_uuid IN (%s)`, strings.Join(placeholders, ","))
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.runtimeDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list node health by uuid: %w", err)
 	}
@@ -249,7 +249,7 @@ WHERE observer_region = ?
 LIMIT 1`
 	var item node.NodeHealth
 	var lastReportedAt sql.NullTime
-	if err := r.db.QueryRowContext(ctx, query, observerRegion, nodeUUID).Scan(
+	if err := r.runtimeDB.QueryRowContext(ctx, query, observerRegion, nodeUUID).Scan(
 		&item.ObserverRegion,
 		&item.NodeUUID,
 		&item.Status,

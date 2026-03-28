@@ -168,10 +168,59 @@ func runServiceList() error {
 			item.Status,
 			item.Region,
 			item.Zone,
+			serviceListReason(item),
 		})
 	}
-	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "REGION", "ZONE"}, rows)
+	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "REGION", "ZONE", "REASON"}, rows)
 	return nil
+}
+
+type serviceListMonitoringSnapshot struct {
+	Sources []serviceListMonitoringSource `json:"sources"`
+}
+
+type serviceListMonitoringSource struct {
+	Name   string                 `json:"name"`
+	Status string                 `json:"status"`
+	Error  string                 `json:"error"`
+	Summary map[string]interface{} `json:"summary"`
+}
+
+func serviceListReason(item node.Node) string {
+	if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusDown {
+		return ""
+	}
+	if len(item.MonitoringSnapshot) == 0 || string(item.MonitoringSnapshot) == "null" {
+		return "reported down"
+	}
+
+	var snapshot serviceListMonitoringSnapshot
+	if err := json.Unmarshal(item.MonitoringSnapshot, &snapshot); err != nil {
+		return "monitoring snapshot invalid"
+	}
+
+	for _, source := range snapshot.Sources {
+		if strings.EqualFold(strings.TrimSpace(source.Status), "ok") {
+			continue
+		}
+		name := strings.TrimSpace(source.Name)
+		if name == "" {
+			name = "monitoring"
+		}
+		if strings.TrimSpace(source.Error) != "" {
+			return fmt.Sprintf("%s: %s", name, strings.TrimSpace(source.Error))
+		}
+		if healthy, ok := source.Summary["healthy"].(bool); ok && !healthy {
+			return fmt.Sprintf("%s: unhealthy", name)
+		}
+		status := strings.TrimSpace(source.Status)
+		if status != "" {
+			return fmt.Sprintf("%s: status=%s", name, status)
+		}
+		return fmt.Sprintf("%s: down", name)
+	}
+
+	return "reported down"
 }
 
 func runServiceShow(uuidValue string) error {

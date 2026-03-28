@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,13 +15,19 @@ import (
 
 type NodeRepository struct {
 	db          *sql.DB
+	runtimeDB   *sql.DB
 	metricsRepo *NodeMetricsRepository
 }
 
-func NewNodeRepository(db *sql.DB) *NodeRepository {
+func NewNodeRepository(db *sql.DB, runtimeDBs ...*sql.DB) *NodeRepository {
+	runtimeDB := db
+	if len(runtimeDBs) > 0 && runtimeDBs[0] != nil {
+		runtimeDB = runtimeDBs[0]
+	}
 	return &NodeRepository{
 		db:          db,
-		metricsRepo: NewNodeMetricsRepository(db),
+		runtimeDB:   runtimeDB,
+		metricsRepo: NewNodeMetricsRepository(runtimeDB),
 	}
 }
 
@@ -66,7 +73,7 @@ CREATE TABLE IF NOT EXISTS node_health_by_region (
     KEY idx_node_health_status (observer_region, status),
     KEY idx_node_health_last_seen_at (observer_region, last_seen_at)
 )`
-	if _, err := r.db.ExecContext(ctx, healthDDL); err != nil {
+	if _, err := r.runtimeDB.ExecContext(ctx, healthDDL); err != nil {
 		return fmt.Errorf("create node_health_by_region table: %w", err)
 	}
 	const historyDDL = `
@@ -106,7 +113,7 @@ CREATE TABLE IF NOT EXISTS managed_nodes_history (
     KEY idx_history_uuid (uuid),
     KEY idx_history_archived_at (archived_at)
 )`
-	if _, err := r.db.ExecContext(ctx, historyDDL); err != nil {
+	if _, err := r.runtimeDB.ExecContext(ctx, historyDDL); err != nil {
 		return fmt.Errorf("create managed_nodes_history table: %w", err)
 	}
 	for _, stmt := range []string{
@@ -118,6 +125,12 @@ CREATE TABLE IF NOT EXISTS managed_nodes_history (
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone VARCHAR(16) NOT NULL DEFAULT ''`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS region_uuid VARCHAR(36) NULL DEFAULT NULL`,
 		`ALTER TABLE managed_nodes ADD COLUMN IF NOT EXISTS zone_uuid VARCHAR(36) NULL DEFAULT NULL`,
+	} {
+		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("upgrade managed_nodes table: %w", err)
+		}
+	}
+	for _, stmt := range []string{
 		`ALTER TABLE node_health_by_region ADD COLUMN IF NOT EXISTS status_source VARCHAR(32) NOT NULL DEFAULT 'self_report'`,
 		`ALTER TABLE node_health_by_region ADD COLUMN IF NOT EXISTS created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)`,
 		`ALTER TABLE node_health_by_region ADD COLUMN IF NOT EXISTS updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)`,
@@ -145,8 +158,8 @@ CREATE TABLE IF NOT EXISTS managed_nodes_history (
 		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS archive_reason VARCHAR(64) NOT NULL DEFAULT 'unknown'`,
 		`ALTER TABLE managed_nodes_history ADD COLUMN IF NOT EXISTS replaced_by_uuid VARCHAR(36) NULL DEFAULT NULL`,
 	} {
-		if _, err := r.db.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("upgrade managed_nodes table: %w", err)
+		if _, err := r.runtimeDB.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("upgrade runtime node tables: %w", err)
 		}
 	}
 	if err := ensureUniqueIndex(ctx, r.db, "managed_nodes", "uk_dns_label", "dns_label"); err != nil {
@@ -164,13 +177,13 @@ CREATE TABLE IF NOT EXISTS managed_nodes_history (
 	if err := ensureIndex(ctx, r.db, "managed_nodes", "idx_zone_uuid", "zone_uuid"); err != nil {
 		return err
 	}
-	if err := ensureIndex(ctx, r.db, "node_health_by_region", "idx_node_health_uuid", "node_uuid"); err != nil {
+	if err := ensureIndex(ctx, r.runtimeDB, "node_health_by_region", "idx_node_health_uuid", "node_uuid"); err != nil {
 		return err
 	}
-	if err := ensureIndex(ctx, r.db, "node_health_by_region", "idx_node_health_status", "observer_region, status"); err != nil {
+	if err := ensureIndex(ctx, r.runtimeDB, "node_health_by_region", "idx_node_health_status", "observer_region, status"); err != nil {
 		return err
 	}
-	if err := ensureIndex(ctx, r.db, "node_health_by_region", "idx_node_health_last_seen_at", "observer_region, last_seen_at"); err != nil {
+	if err := ensureIndex(ctx, r.runtimeDB, "node_health_by_region", "idx_node_health_last_seen_at", "observer_region, last_seen_at"); err != nil {
 		return err
 	}
 	if err := r.metricsRepo.EnsureSchema(ctx); err != nil {
@@ -382,7 +395,28 @@ func (r *NodeRepository) ArchiveAndDeleteByManagementAddress(ctx context.Context
 		reason = "replaced"
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	identity, err := r.FindActiveByManagementAddress(ctx, managementAddress)
+	if err != nil {
+		return fmt.Errorf("find active managed node by management address: %w", err)
+	}
+	if identity == nil {
+		return nil
+	}
+
+	var health *node.NodeHealth
+	if identity.Region != "" {
+		health, err = r.findHealthByObserverRegion(ctx, identity.UUID, identity.Region)
+		if err != nil {
+			return err
+		}
+	}
+	metricsByNode, err := r.metricsRepo.LoadByNodeUUIDs(ctx, []string{identity.UUID})
+	if err != nil {
+		return err
+	}
+	metrics := metricsByNode[identity.UUID]
+
+	tx, err := r.runtimeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin archive managed node tx: %w", err)
 	}
@@ -392,7 +426,16 @@ func (r *NodeRepository) ArchiveAndDeleteByManagementAddress(ctx context.Context
 		}
 	}()
 
-	insertResult, err := tx.ExecContext(
+	status := node.StatusDown
+	lastSeenAt := identity.UpdatedAt
+	var lastReportedAt time.Time
+	if health != nil {
+		status = health.Status
+		lastSeenAt = health.LastSeenAt
+		lastReportedAt = health.LastReportedAt
+	}
+
+	if _, err := tx.ExecContext(
 		ctx,
 		`INSERT INTO managed_nodes_history (
 		     uuid, hostname, management_address, internal_ip, public_ip, dns_label, dns_name,
@@ -401,54 +444,51 @@ func (r *NodeRepository) ArchiveAndDeleteByManagementAddress(ctx context.Context
 		     swap_usage_percent, disk_usage_percent, disk_details, monitoring_snapshot,
 		     created_at, updated_at, last_seen_at, last_reported_at, archived_at,
 		     archive_reason, replaced_by_uuid
-		 )
-		 SELECT
-		     n.uuid, n.hostname, n.management_address, n.internal_ip, n.public_ip, n.dns_label, n.dns_name,
-		     n.region, n.region_uuid, n.zone, n.zone_uuid, COALESCE(h.status, 'down'),
-		     COALESCE(m.cpu_cores, 0), COALESCE(m.cpu_usage_percent, 0),
-		     COALESCE(m.memory_total_gb, 0), COALESCE(m.memory_used_gb, 0), COALESCE(m.memory_usage_percent, 0),
-		     COALESCE(m.swap_total_gb, 0), COALESCE(m.swap_used_gb, 0), COALESCE(m.swap_usage_percent, 0),
-		     COALESCE(m.disk_usage_percent, 0), m.disk_details, m.monitoring_snapshot,
-		     n.created_at, n.updated_at, COALESCE(h.last_seen_at, n.updated_at), h.last_reported_at, CURRENT_TIMESTAMP(6),
-		     ?, NULLIF(?, '')
-		 FROM managed_nodes n
-		 LEFT JOIN node_health_by_region h ON h.node_uuid = n.uuid AND h.observer_region = n.region
-		 LEFT JOIN managed_node_metrics_ext m ON m.node_uuid = n.uuid
-		 WHERE n.management_address = ?`,
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), ?, NULLIF(?, ''))`,
+		identity.UUID,
+		identity.Hostname,
+		identity.ManagementAddress,
+		identity.InternalIP,
+		identity.PublicIP,
+		nullString(identity.DNSLabel),
+		nullString(identity.DNSName),
+		identity.Region,
+		nullString(identity.RegionUUID),
+		identity.Zone,
+		nullString(identity.ZoneUUID),
+		status,
+		metrics.CPUCores,
+		metrics.CPUUsagePercent,
+		metrics.MemoryTotalGB,
+		metrics.MemoryUsedGB,
+		metrics.MemoryUsagePercent,
+		metrics.SwapTotalGB,
+		metrics.SwapUsedGB,
+		metrics.SwapUsagePercent,
+		metrics.DiskUsagePercent,
+		marshalDiskDetails(metrics.DiskDetails),
+		marshalRawJSON(metrics.MonitoringSnapshot),
+		identity.CreatedAt,
+		identity.UpdatedAt,
+		nullTime(lastSeenAt),
+		nullTime(lastReportedAt),
 		reason,
 		replacedByUUID,
-		managementAddress,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("archive managed node by management address: %w", err)
 	}
 
-	rowsAffected, err := insertResult.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("archive managed node rows affected: %w", err)
+	if err := r.deleteRuntimeByNodeUUIDsTx(ctx, tx, []string{identity.UUID}); err != nil {
+		return err
 	}
-	if rowsAffected == 0 {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit empty archive managed node tx: %w", err)
-		}
-		tx = nil
-		return nil
-	}
-
-	if _, err := tx.ExecContext(ctx, `DELETE m FROM managed_node_metrics_ext m INNER JOIN managed_nodes n ON n.uuid = m.node_uuid WHERE n.management_address = ?`, managementAddress); err != nil {
-		return fmt.Errorf("delete managed node metrics by management address: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE h FROM node_health_by_region h INNER JOIN managed_nodes n ON n.uuid = h.node_uuid WHERE n.management_address = ?`, managementAddress); err != nil {
-		return fmt.Errorf("delete managed node health by management address: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM managed_nodes WHERE management_address = ?`, managementAddress); err != nil {
-		return fmt.Errorf("delete managed node by management address: %w", err)
-	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit archive managed node tx: %w", err)
 	}
 	tx = nil
+
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE management_address = ?`, managementAddress); err != nil {
+		return fmt.Errorf("delete managed node by management address: %w", err)
+	}
 	return nil
 }
 
@@ -479,11 +519,8 @@ ORDER BY region ASC, zone ASC, hostname ASC, uuid ASC`
 }
 
 func (r *NodeRepository) DeleteByUUID(ctx context.Context, uuid string) (bool, error) {
-	if err := r.metricsRepo.DeleteByNodeUUID(ctx, uuid); err != nil {
+	if err := r.deleteRuntimeByNodeUUIDs(ctx, []string{uuid}); err != nil {
 		return false, err
-	}
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM node_health_by_region WHERE node_uuid = ?`, uuid); err != nil {
-		return false, fmt.Errorf("delete managed node health: %w", err)
 	}
 	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE uuid = ?`, uuid)
 	if err != nil {
@@ -497,11 +534,12 @@ func (r *NodeRepository) DeleteByUUID(ctx context.Context, uuid string) (bool, e
 }
 
 func (r *NodeRepository) DeleteByRegionUUID(ctx context.Context, regionUUID string) (int64, error) {
-	if err := r.metricsRepo.DeleteByRegionUUID(ctx, regionUUID); err != nil {
+	uuids, err := r.listIdentityUUIDsByField(ctx, "region_uuid", regionUUID)
+	if err != nil {
 		return 0, err
 	}
-	if _, err := r.db.ExecContext(ctx, `DELETE h FROM node_health_by_region h INNER JOIN managed_nodes n ON n.uuid = h.node_uuid WHERE n.region_uuid = ?`, regionUUID); err != nil {
-		return 0, fmt.Errorf("delete managed node health by region uuid: %w", err)
+	if err := r.deleteRuntimeByNodeUUIDs(ctx, uuids); err != nil {
+		return 0, err
 	}
 	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE region_uuid = ?`, regionUUID)
 	if err != nil {
@@ -511,11 +549,12 @@ func (r *NodeRepository) DeleteByRegionUUID(ctx context.Context, regionUUID stri
 }
 
 func (r *NodeRepository) DeleteByZoneUUID(ctx context.Context, zoneUUID string) (int64, error) {
-	if err := r.metricsRepo.DeleteByZoneUUID(ctx, zoneUUID); err != nil {
+	uuids, err := r.listIdentityUUIDsByField(ctx, "zone_uuid", zoneUUID)
+	if err != nil {
 		return 0, err
 	}
-	if _, err := r.db.ExecContext(ctx, `DELETE h FROM node_health_by_region h INNER JOIN managed_nodes n ON n.uuid = h.node_uuid WHERE n.zone_uuid = ?`, zoneUUID); err != nil {
-		return 0, fmt.Errorf("delete managed node health by zone uuid: %w", err)
+	if err := r.deleteRuntimeByNodeUUIDs(ctx, uuids); err != nil {
+		return 0, err
 	}
 	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE zone_uuid = ?`, zoneUUID)
 	if err != nil {
@@ -542,83 +581,48 @@ func (r *NodeRepository) UpdateStatus(ctx context.Context, uuid string, status s
 }
 
 func (r *NodeRepository) ListRegions(ctx context.Context) ([]node.RegionSummary, error) {
-	const query = `
-SELECT
-    n.region,
-    COUNT(*) AS total,
-    SUM(CASE WHEN COALESCE(h.status, 'down') = 'up' THEN 1 ELSE 0 END) AS up_count,
-    SUM(CASE WHEN COALESCE(h.status, 'down') = 'down' THEN 1 ELSE 0 END) AS down_count
-FROM managed_nodes n
-LEFT JOIN node_health_by_region h
-  ON h.node_uuid = n.uuid
- AND h.observer_region = n.region
-GROUP BY n.region
-ORDER BY n.region ASC`
-
-	rows, err := r.db.QueryContext(ctx, query)
+	nodes, err := r.List(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list region summaries: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	var items []node.RegionSummary
-	for rows.Next() {
-		var item node.RegionSummary
-		if err := rows.Scan(
-			&item.Region,
-			&item.Total,
-			&item.UpCount,
-			&item.DownCount,
-		); err != nil {
-			return nil, fmt.Errorf("scan region summary: %w", err)
+	summaries := make(map[string]*node.RegionSummary)
+	for _, item := range nodes {
+		summary := summaries[item.Region]
+		if summary == nil {
+			summary = &node.RegionSummary{Region: item.Region}
+			summaries[item.Region] = summary
 		}
-		items = append(items, item)
+		summary.Total++
+		if strings.EqualFold(strings.TrimSpace(item.Status), node.StatusUp) {
+			summary.UpCount++
+		} else {
+			summary.DownCount++
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate region summaries: %w", err)
-	}
-	return items, nil
+	return sortRegionSummaries(summaries), nil
 }
 
 func (r *NodeRepository) ListRegionZones(ctx context.Context) ([]node.RegionZoneSummary, error) {
-	const query = `
-SELECT
-    n.region,
-    n.zone,
-    COUNT(*) AS total,
-    SUM(CASE WHEN COALESCE(h.status, 'down') = 'up' THEN 1 ELSE 0 END) AS up_count,
-    SUM(CASE WHEN COALESCE(h.status, 'down') = 'down' THEN 1 ELSE 0 END) AS down_count
-FROM managed_nodes n
-LEFT JOIN node_health_by_region h
-  ON h.node_uuid = n.uuid
- AND h.observer_region = n.region
-GROUP BY n.region, n.zone
-ORDER BY n.region ASC, n.zone ASC`
-
-	rows, err := r.db.QueryContext(ctx, query)
+	nodes, err := r.List(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list region zone summaries: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	var items []node.RegionZoneSummary
-	for rows.Next() {
-		var item node.RegionZoneSummary
-		if err := rows.Scan(
-			&item.Region,
-			&item.Zone,
-			&item.Total,
-			&item.UpCount,
-			&item.DownCount,
-		); err != nil {
-			return nil, fmt.Errorf("scan region zone summary: %w", err)
+	summaries := make(map[string]*node.RegionZoneSummary)
+	for _, item := range nodes {
+		key := item.Region + "\x00" + item.Zone
+		summary := summaries[key]
+		if summary == nil {
+			summary = &node.RegionZoneSummary{Region: item.Region, Zone: item.Zone}
+			summaries[key] = summary
 		}
-		items = append(items, item)
+		summary.Total++
+		if strings.EqualFold(strings.TrimSpace(item.Status), node.StatusUp) {
+			summary.UpCount++
+		} else {
+			summary.DownCount++
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate region zone summaries: %w", err)
-	}
-	return items, nil
+	return sortRegionZoneSummaries(summaries), nil
 }
 
 func nullTime(value time.Time) interface{} {
@@ -791,4 +795,94 @@ func ensureIndex(ctx context.Context, db *sql.DB, tableName, indexName, columns 
 func isDuplicateKeyNameError(err error) bool {
 	var mysqlErr *mysqldriver.MySQLError
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1061
+}
+
+func (r *NodeRepository) listIdentityUUIDsByField(ctx context.Context, fieldName string, value string) ([]string, error) {
+	query := fmt.Sprintf(`SELECT uuid FROM managed_nodes WHERE %s = ? ORDER BY uuid ASC`, fieldName)
+	rows, err := r.db.QueryContext(ctx, query, strings.TrimSpace(value))
+	if err != nil {
+		return nil, fmt.Errorf("list managed node uuids by %s: %w", fieldName, err)
+	}
+	defer rows.Close()
+	var uuids []string
+	for rows.Next() {
+		var uuid string
+		if err := rows.Scan(&uuid); err != nil {
+			return nil, fmt.Errorf("scan managed node uuid by %s: %w", fieldName, err)
+		}
+		uuids = append(uuids, uuid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate managed node uuids by %s: %w", fieldName, err)
+	}
+	return uuids, nil
+}
+
+func (r *NodeRepository) deleteRuntimeByNodeUUIDs(ctx context.Context, nodeUUIDs []string) error {
+	tx, err := r.runtimeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin runtime cleanup tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := r.deleteRuntimeByNodeUUIDsTx(ctx, tx, nodeUUIDs); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit runtime cleanup tx: %w", err)
+	}
+	return nil
+}
+
+func (r *NodeRepository) deleteRuntimeByNodeUUIDsTx(ctx context.Context, tx *sql.Tx, nodeUUIDs []string) error {
+	if len(nodeUUIDs) == 0 {
+		return nil
+	}
+	placeholders := make([]string, 0, len(nodeUUIDs))
+	args := make([]interface{}, 0, len(nodeUUIDs))
+	for _, nodeUUID := range nodeUUIDs {
+		nodeUUID = strings.TrimSpace(nodeUUID)
+		if nodeUUID == "" {
+			continue
+		}
+		placeholders = append(placeholders, "?")
+		args = append(args, nodeUUID)
+	}
+	if len(placeholders) == 0 {
+		return nil
+	}
+	deleteMetricsQuery := fmt.Sprintf(`DELETE FROM managed_node_metrics_ext WHERE node_uuid IN (%s)`, strings.Join(placeholders, ","))
+	if _, err := tx.ExecContext(ctx, deleteMetricsQuery, args...); err != nil {
+		return fmt.Errorf("delete managed node metrics by uuid: %w", err)
+	}
+	deleteHealthQuery := fmt.Sprintf(`DELETE FROM node_health_by_region WHERE node_uuid IN (%s)`, strings.Join(placeholders, ","))
+	if _, err := tx.ExecContext(ctx, deleteHealthQuery, args...); err != nil {
+		return fmt.Errorf("delete managed node health by uuid: %w", err)
+	}
+	return nil
+}
+
+func sortRegionSummaries(items map[string]*node.RegionSummary) []node.RegionSummary {
+	regions := make([]string, 0, len(items))
+	for region := range items {
+		regions = append(regions, region)
+	}
+	sort.Strings(regions)
+	result := make([]node.RegionSummary, 0, len(regions))
+	for _, region := range regions {
+		result = append(result, *items[region])
+	}
+	return result
+}
+
+func sortRegionZoneSummaries(items map[string]*node.RegionZoneSummary) []node.RegionZoneSummary {
+	keys := make([]string, 0, len(items))
+	for key := range items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]node.RegionZoneSummary, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, *items[key])
+	}
+	return result
 }
