@@ -80,11 +80,20 @@ func (s *RoutingSnapshotService) Generate(ctx context.Context) (routing.Manifest
 
 	validRegions := make(map[string]struct{}, len(regionItems))
 	for _, item := range regionItems {
-		validRegions[item.Name] = struct{}{}
+		name := strings.TrimSpace(strings.ToLower(item.Name))
+		if name == "" {
+			continue
+		}
+		validRegions[name] = struct{}{}
 	}
 	validZones := make(map[string]struct{}, len(zones))
 	for _, item := range zones {
-		validZones[item.RegionName+"\x00"+item.Name] = struct{}{}
+		rn := strings.TrimSpace(strings.ToLower(item.RegionName))
+		zn := strings.TrimSpace(strings.ToUpper(item.Name))
+		if rn == "" || zn == "" {
+			continue
+		}
+		validZones[rn+"\x00"+zn] = struct{}{}
 	}
 
 	upNodes := make(map[string]node.Node)
@@ -92,10 +101,12 @@ func (s *RoutingSnapshotService) Generate(ctx context.Context) (routing.Manifest
 		if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusUp {
 			continue
 		}
-		if _, ok := validRegions[item.Region]; !ok {
+		regionKey := strings.TrimSpace(strings.ToLower(item.Region))
+		zoneKey := strings.TrimSpace(strings.ToUpper(item.Zone))
+		if _, ok := validRegions[regionKey]; !ok {
 			continue
 		}
-		if _, ok := validZones[item.Region+"\x00"+item.Zone]; !ok {
+		if _, ok := validZones[regionKey+"\x00"+zoneKey]; !ok {
 			continue
 		}
 		upNodes[item.UUID] = item

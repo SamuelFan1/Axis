@@ -246,6 +246,7 @@ func runServiceShow(uuidValue string) error {
 		{"PUBLIC_IP", item.PublicIP},
 		{"DNS_NAME", item.DNSName},
 		{"STATUS", item.Status},
+		{"STATUS_REASON", serviceListReason(item)},
 		{"REGION", item.Region},
 		{"ZONE", item.Zone},
 		{"CPU_CORES", fmt.Sprintf("%d cores", item.CPUCores)},

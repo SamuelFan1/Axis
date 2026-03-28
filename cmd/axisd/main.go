@@ -125,6 +125,28 @@ func main() {
 		log.Print("startup data reconciliation disabled; skipping managed_nodes backfill and dns seed")
 	}
 
+	// RoutingSnapshotService filters UP nodes against platform_core.regions + zones. That seeding
+	// used to run only when AXIS_AUTO_SCHEMA_UPGRADE=true, so with auto upgrade off the zones table
+	// could stay empty while aggregated_node_status still showed nodes — producing empty KV manifests.
+	if cfg.Routing.Enabled && cfg.Routing.SnapshotEnabled && !cfg.App.AutoSchemaUpgrade {
+		log.Print("routing snapshot enabled without full auto schema upgrade; ensuring core regions/zones for routing candidate filters")
+		if err := regionRepo.EnsureSchema(ctx); err != nil {
+			log.Fatalf("routing: ensure region schema: %v", err)
+		}
+		if err := zoneRepo.EnsureSchema(ctx); err != nil {
+			log.Fatalf("routing: ensure zone schema: %v", err)
+		}
+		if err := regionService.EnsureConfigured(ctx); err != nil {
+			log.Fatalf("routing: ensure configured regions: %v", err)
+		}
+		if err := zoneService.EnsureConfigured(ctx); err != nil {
+			log.Fatalf("routing: ensure configured zones: %v", err)
+		}
+		if err := zoneRepo.EnsureConstraints(ctx); err != nil {
+			log.Fatalf("routing: ensure zone relational constraints: %v", err)
+		}
+	}
+
 	var routingHandler *httptransport.RoutingHandler
 	if cfg.Routing.Enabled {
 		observationRepo := mysql.NewObservationRepository(dbs.Runtime)
