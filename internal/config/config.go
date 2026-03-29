@@ -341,6 +341,30 @@ func LoadCLIAuth() (*CLIAuthConfig, error) {
 	return cfg, nil
 }
 
+func LoadWorkerAdminConfig() WorkerAdminConfig {
+	loadEnvFile(getEnv("AXIS_ENV_FILE", ".env"))
+	return WorkerAdminConfig{
+		WorkerURL:         strings.TrimSpace(getEnv("AXIS_WORKER_URL", "")),
+		WorkerAdminSecret: strings.TrimSpace(getEnv("AXIS_WORKER_ADMIN_SECRET", "")),
+	}
+}
+
+func LoadRoutingConfig() RoutingConfig {
+	loadEnvFile(getEnv("AXIS_ENV_FILE", ".env"))
+	return RoutingConfig{
+		Enabled:                 getEnvBool("AXIS_ROUTING_ENABLED", false),
+		ObservationEnabled:      getEnvBool("AXIS_ROUTING_OBSERVATION_ENABLED", false),
+		SnapshotEnabled:         getEnvBool("AXIS_ROUTING_SNAPSHOT_ENABLED", false),
+		PublisherEnabled:        getEnvBool("AXIS_ROUTING_PUBLISHER_ENABLED", false),
+		PublishIntervalSec:      getEnvInt("AXIS_ROUTING_PUBLISH_INTERVAL_SEC", 60),
+		SnapshotTTLSeconds:      getEnvInt("AXIS_ROUTING_SNAPSHOT_TTL_SEC", 90),
+		TopN:                    getEnvInt("AXIS_ROUTING_TOPN", 3),
+		CloudflareAccountID:     strings.TrimSpace(getEnv("AXIS_ROUTING_CF_ACCOUNT_ID", "")),
+		CloudflareAPIToken:      getEnv("AXIS_ROUTING_CF_API_TOKEN", ""),
+		CloudflareKVNamespaceID: strings.TrimSpace(getEnv("AXIS_ROUTING_CF_KV_NAMESPACE_ID", "")),
+	}
+}
+
 func loadEnvFile(path string) {
 	file, err := os.Open(path)
 	if err != nil {

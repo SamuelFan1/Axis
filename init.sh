@@ -82,6 +82,72 @@ detect_wt0_ipv4() {
   ip -o -4 addr show dev wt0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
 }
 
+# 根据 wt0 内网段写入 AXIS_LOCAL_REGION / AXIS_AUTHORITATIVE_REGION / 路由发布角色。
+# 约定：10.8.1.1–10.8.1.3 为亚洲控制面（仅 10.8.1.1 开启 AXIS_ROUTING_PUBLISHER，避免多实例写 KV）；
+#       10.8.1.x 其余为 asia 边缘；10.8.0/2/3 段对应北美/澳/欧。
+sync_wt0_subnet_region() {
+  local wt0_ip o1 o2 o3 o4
+
+  wt0_ip="$(detect_wt0_ipv4 || true)"
+  wt0_ip="$(printf '%s' "${wt0_ip}" | tr -d '[:space:]')"
+  if [[ -z "${wt0_ip}" ]]; then
+    return 1
+  fi
+  if [[ ! "${wt0_ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    return 1
+  fi
+  IFS=. read -r o1 o2 o3 o4 <<< "${wt0_ip}"
+  if [[ "${o1}.${o2}" != "10.8" ]]; then
+    return 1
+  fi
+
+  case "${o3}" in
+  1)
+    echo -e "${YELLOW}Detected wt0:${NC} ${wt0_ip} ${YELLOW}(10.8.1.x → asia)${NC}"
+    upsert_env_value "AXIS_LOCAL_REGION" "asia"
+    upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
+    if [[ "${o4}" =~ ^[123]$ ]]; then
+      echo -e "${GREEN}  Role:${NC} asia control-plane master (.1–.3)"
+      if [[ "${o4}" == "1" ]]; then
+        upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "true"
+        echo -e "${GREEN}  Routing KV publisher:${NC} enabled (primary 10.8.1.1)"
+      else
+        upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
+        echo -e "${BLUE}  Routing KV publisher:${NC} disabled (avoid duplicate with 10.8.1.1)"
+      fi
+    else
+      echo -e "${BLUE}  Role:${NC} asia edge (not .1–.3)"
+      upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
+    fi
+    return 0
+    ;;
+  0)
+    echo -e "${YELLOW}Detected wt0:${NC} ${wt0_ip} ${YELLOW}(10.8.0.x → north_america)${NC}"
+    upsert_env_value "AXIS_LOCAL_REGION" "north_america"
+    upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
+    upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
+    return 0
+    ;;
+  2)
+    echo -e "${YELLOW}Detected wt0:${NC} ${wt0_ip} ${YELLOW}(10.8.2.x → australia)${NC}"
+    upsert_env_value "AXIS_LOCAL_REGION" "australia"
+    upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
+    upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
+    return 0
+    ;;
+  3)
+    echo -e "${YELLOW}Detected wt0:${NC} ${wt0_ip} ${YELLOW}(10.8.3.x → europe)${NC}"
+    upsert_env_value "AXIS_LOCAL_REGION" "europe"
+    upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
+    upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
 extract_hostname_prefix() {
   local hostname_value="$1"
   printf '%s\n' "${hostname_value}" | awk -F- '{print toupper($1)}'
@@ -231,7 +297,12 @@ echo -e "${CYAN}========================================${NC}"
 
 echo -e "${BLUE}Project root:${NC} ${PROJECT_ROOT}"
 
-sync_local_region_from_mapping
+if ! sync_wt0_subnet_region; then
+  echo -e "${BLUE}wt0 subnet not matched (or wt0 missing); using hostname / AXIS_WT0_REGION_* mapping.${NC}"
+  sync_local_region_from_mapping
+else
+  echo -e "${GREEN}AXIS_LOCAL_REGION / routing publisher updated from wt0.${NC}"
+fi
 
 if ! command -v go >/dev/null 2>&1; then
   echo -e "${RED}Error:${NC} Go toolchain not found in PATH."

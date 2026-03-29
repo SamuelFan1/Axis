@@ -2,17 +2,22 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/SamuelFan1/Axis/internal/config"
 	"github.com/SamuelFan1/Axis/internal/domain/node"
+	"github.com/SamuelFan1/Axis/internal/domain/routing"
+	"github.com/SamuelFan1/Axis/internal/platform/routingpublish"
+	"github.com/SamuelFan1/Axis/internal/platform/workeradmin"
 	httptransport "github.com/SamuelFan1/Axis/internal/transport/http"
 )
 
@@ -23,6 +28,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "version":
+		printCLIVersion()
 	case "service-register":
 		if err := runServiceRegister(os.Args[2:]); err != nil {
 			log.Fatalf("service-register: %v", err)
@@ -153,6 +160,11 @@ func runServiceList() error {
 		return fmt.Errorf("list managed nodes: %w", err)
 	}
 
+	manualStatuses, err := loadManualStatuses(items)
+	if err != nil {
+		return err
+	}
+
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
 		internalIP := item.InternalIP
@@ -165,13 +177,14 @@ func runServiceList() error {
 			internalIP,
 			item.PublicIP,
 			item.DNSName,
-			item.Status,
+			displayServiceStatus(item.Status),
+			manualStatusForNode(item, manualStatuses),
 			item.Region,
 			item.Zone,
 			serviceListReason(item),
 		})
 	}
-	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "REGION", "ZONE", "REASON"}, rows)
+	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "SERVICE_STATUS", "MANUAL_STATUS", "REGION", "ZONE", "REASON"}, rows)
 	return nil
 }
 
@@ -180,9 +193,9 @@ type serviceListMonitoringSnapshot struct {
 }
 
 type serviceListMonitoringSource struct {
-	Name   string                 `json:"name"`
-	Status string                 `json:"status"`
-	Error  string                 `json:"error"`
+	Name    string                 `json:"name"`
+	Status  string                 `json:"status"`
+	Error   string                 `json:"error"`
 	Summary map[string]interface{} `json:"summary"`
 }
 
@@ -234,6 +247,11 @@ func runServiceShow(uuidValue string) error {
 		return err
 	}
 
+	manualStatuses, err := loadManualStatuses([]node.Node{item})
+	if err != nil {
+		return err
+	}
+
 	internalIP := item.InternalIP
 	if internalIP == "" {
 		internalIP = extractInternalIP(item.ManagementAddress)
@@ -245,7 +263,8 @@ func runServiceShow(uuidValue string) error {
 		{"INTERNAL_IP", internalIP},
 		{"PUBLIC_IP", item.PublicIP},
 		{"DNS_NAME", item.DNSName},
-		{"STATUS", item.Status},
+		{"SERVICE_STATUS", displayServiceStatus(item.Status)},
+		{"MANUAL_STATUS", manualStatusForNode(item, manualStatuses)},
 		{"STATUS_REASON", serviceListReason(item)},
 		{"REGION", item.Region},
 		{"ZONE", item.Zone},
@@ -391,14 +410,17 @@ func runServiceSetStatus(uuidValue string, status string) error {
 		return err
 	}
 
-	action := "disable"
+	action := "manual-disable"
+	manualStatus := "disable"
 	if status == node.StatusUp {
-		action = "enable"
+		action = "manual-enable"
+		manualStatus = "enable"
 	}
 	printRecord("SERVICE_STATUS_RESULT", [][2]string{
 		{"UUID", result.Node.UUID},
 		{"HOSTNAME", result.Node.Hostname},
-		{"ACTION", action},
+		{"MANUAL_ACTION", action},
+		{"MANUAL_STATUS", manualStatus},
 		{"EXTERNAL_MAINTENANCE", fmt.Sprintf("%t", result.ExternalMaintenance)},
 		{"WORKER_SYNCED", fmt.Sprintf("%t", result.WorkerSynced)},
 		{"REGION", result.Node.Region},
@@ -545,17 +567,112 @@ func loadAPIClient() (*httptransport.Client, error) {
 	return httptransport.NewClient(*cfg), nil
 }
 
+func loadManualStatuses(items []node.Node) (map[string]string, error) {
+	originLabels := make([]string, 0, len(items))
+	for _, item := range items {
+		originLabel := strings.TrimSpace(routing.OriginLabelForHostname(item.Hostname))
+		if originLabel == "" {
+			continue
+		}
+		originLabels = append(originLabels, originLabel)
+	}
+
+	workerClient := workeradmin.NewClient(config.LoadWorkerAdminConfig())
+	if workerClient.Enabled() {
+		statuses, err := workerClient.GetManualNodeStatuses(context.Background(), originLabels)
+		if err == nil {
+			return statuses, nil
+		}
+	}
+
+	kvClient := routingpublish.NewCloudflareKVClient(config.LoadRoutingConfig())
+	if kvClient == nil || !kvClient.Enabled() {
+		return map[string]string{}, nil
+	}
+
+	rawValue, err := kvClient.GetValue(context.Background(), "node:manual-blacklist")
+	if err != nil {
+		return nil, err
+	}
+
+	var disabledNodes []string
+	if strings.TrimSpace(rawValue) != "" {
+		if err := json.Unmarshal([]byte(rawValue), &disabledNodes); err != nil {
+			return nil, fmt.Errorf("decode manual blacklist: %w", err)
+		}
+	}
+
+	disabledSet := make(map[string]struct{}, len(disabledNodes))
+	for _, nodeID := range disabledNodes {
+		disabledSet[strings.ToLower(strings.TrimSpace(nodeID))] = struct{}{}
+	}
+
+	result := make(map[string]string, len(originLabels))
+	for _, originLabel := range originLabels {
+		normalized := strings.ToLower(strings.TrimSpace(originLabel))
+		if _, ok := disabledSet[normalized]; ok {
+			result[normalized] = "disable"
+			continue
+		}
+		result[normalized] = "enable"
+	}
+	return result, nil
+}
+
+func manualStatusForNode(item node.Node, manualStatuses map[string]string) string {
+	originLabel := strings.ToLower(strings.TrimSpace(routing.OriginLabelForHostname(item.Hostname)))
+	if originLabel != "" {
+		if status, ok := manualStatuses[originLabel]; ok && strings.TrimSpace(status) != "" {
+			return status
+		}
+	}
+	return "enable"
+}
+
+func displayServiceStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case node.StatusDown:
+		return "service-disable"
+	case node.StatusUp:
+		return "service-enable"
+	default:
+		return strings.TrimSpace(status)
+	}
+}
+
+func printCLIVersion() {
+	fmt.Println("axis CLI")
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Path != "" {
+			fmt.Printf("module: %s\n", info.Main.Path)
+		}
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			fmt.Printf("module version: %s\n", v)
+		}
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				fmt.Printf("vcs.revision: %s\n", s.Value)
+			case "vcs.time":
+				fmt.Printf("vcs.time: %s\n", s.Value)
+			}
+		}
+	}
+	fmt.Println("features: service-list REASON column, service-show STATUS_REASON")
+}
+
 func printUsage() {
 	fmt.Println("Axis CLI")
 	fmt.Println("")
 	fmt.Println("Usage:")
+	fmt.Println("  axis version")
 	fmt.Println("  axis service-register --hostname <name> --management-address <addr> --region <region> --zone <zone> [--status up] [--uuid <uuid>]")
 	fmt.Println("  axis service-list")
 	fmt.Println("  axis service-show <uuid>")
 	fmt.Println("  axis service-workloads <uuid>")
 	fmt.Println("  axis service-delete <uuid>")
-	fmt.Println("  axis service-up <uuid>      # 仅恢复 Worker 外部流量")
-	fmt.Println("  axis service-down <uuid>    # 仅摘除 Worker 外部流量")
+	fmt.Println("  axis service-up <uuid>      # 将 MANUAL_STATUS 设为 enable，仅恢复 Worker 外部流量")
+	fmt.Println("  axis service-down <uuid>    # 将 MANUAL_STATUS 设为 disable，仅摘除 Worker 外部流量")
 	fmt.Println("  axis region-list")
 	fmt.Println("  axis region-create --name <name>")
 	fmt.Println("  axis region-delete <uuid>")

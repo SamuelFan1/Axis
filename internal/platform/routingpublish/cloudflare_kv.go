@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -23,9 +24,9 @@ type CloudflareKVPublisher struct {
 }
 
 type kvBulkItem struct {
-	Key            string `json:"key"`
-	Value          string `json:"value"`
-	ExpirationTTL  int    `json:"expiration_ttl,omitempty"`
+	Key           string `json:"key"`
+	Value         string `json:"value"`
+	ExpirationTTL int    `json:"expiration_ttl,omitempty"`
 }
 
 type bulkUpdateEnvelope struct {
@@ -40,6 +41,10 @@ type bulkUpdateEnvelope struct {
 }
 
 func NewCloudflareKVPublisher(cfg config.RoutingConfig) Publisher {
+	return NewCloudflareKVClient(cfg)
+}
+
+func NewCloudflareKVClient(cfg config.RoutingConfig) *CloudflareKVPublisher {
 	return &CloudflareKVPublisher{
 		accountID:   strings.TrimSpace(cfg.CloudflareAccountID),
 		namespaceID: strings.TrimSpace(cfg.CloudflareKVNamespaceID),
@@ -52,6 +57,51 @@ func NewCloudflareKVPublisher(cfg config.RoutingConfig) Publisher {
 
 func (p *CloudflareKVPublisher) Enabled() bool {
 	return p != nil && p.accountID != "" && p.namespaceID != "" && p.apiToken != ""
+}
+
+func (p *CloudflareKVPublisher) GetValue(ctx context.Context, key string) (string, error) {
+	if !p.Enabled() {
+		return "", fmt.Errorf("cloudflare kv publisher is not configured")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("cloudflare kv key is required")
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf(
+			"%s/accounts/%s/storage/kv/namespaces/%s/values/%s",
+			cloudflareAPIBaseURL,
+			p.accountID,
+			p.namespaceID,
+			key,
+		),
+		nil,
+	)
+	if err != nil {
+		return "", fmt.Errorf("build cloudflare kv read request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.apiToken)
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send cloudflare kv read request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read cloudflare kv response: %w", err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("cloudflare kv read failed with status %d", resp.StatusCode)
+	}
+	return string(body), nil
 }
 
 func (p *CloudflareKVPublisher) PublishSnapshot(ctx context.Context, manifest routing.Manifest, bundles []routing.Bundle) error {

@@ -335,6 +335,7 @@ type stubWorkerAdminClient struct {
 	enableCalls  []string
 	disableErr   error
 	enableErr    error
+	manualStatus map[string]string
 }
 
 func (c *stubWorkerAdminClient) Enabled() bool {
@@ -355,6 +356,20 @@ func (c *stubWorkerAdminClient) EnableNode(ctx context.Context, originLabel stri
 		return c.enableErr
 	}
 	return nil
+}
+
+func (c *stubWorkerAdminClient) GetManualNodeStatuses(ctx context.Context, originLabels []string) (map[string]string, error) {
+	result := make(map[string]string, len(originLabels))
+	for _, originLabel := range originLabels {
+		if c.manualStatus != nil {
+			if status, ok := c.manualStatus[originLabel]; ok {
+				result[originLabel] = status
+				continue
+			}
+		}
+		result[originLabel] = "enable"
+	}
+	return result, nil
 }
 
 func newTestNodeService(items []node.Node) *NodeService {
