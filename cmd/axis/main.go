@@ -177,6 +177,7 @@ func runServiceList() error {
 			internalIP,
 			item.PublicIP,
 			item.DNSName,
+			item.Status,
 			displayServiceStatus(item.Status),
 			manualStatusForNode(item, manualStatuses),
 			item.Region,
@@ -184,7 +185,7 @@ func runServiceList() error {
 			serviceListReason(item),
 		})
 	}
-	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "SERVICE_STATUS", "MANUAL_STATUS", "REGION", "ZONE", "REASON"}, rows)
+	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "SERVICE_STATUS", "MANUAL_STATUS", "REGION", "ZONE", "REASON"}, rows)
 	return nil
 }
 
@@ -263,6 +264,7 @@ func runServiceShow(uuidValue string) error {
 		{"INTERNAL_IP", internalIP},
 		{"PUBLIC_IP", item.PublicIP},
 		{"DNS_NAME", item.DNSName},
+		{"STATUS", item.Status},
 		{"SERVICE_STATUS", displayServiceStatus(item.Status)},
 		{"MANUAL_STATUS", manualStatusForNode(item, manualStatuses)},
 		{"STATUS_REASON", serviceListReason(item)},

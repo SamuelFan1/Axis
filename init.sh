@@ -291,6 +291,21 @@ sync_local_region_from_mapping() {
   upsert_env_value "AXIS_LOCAL_REGION" "${region}"
 }
 
+sync_axis_db_routes() {
+  echo -e "${YELLOW}Syncing Axis DB routes in .env...${NC}"
+  upsert_env_value "AXIS_CORE_DB_HOST" "127.0.0.1"
+  upsert_env_value "AXIS_CORE_DB_PORT" "4416"
+  upsert_env_value "AXIS_CORE_DB_NAME" "platform_core"
+  upsert_env_value "AXIS_RUNTIME_DB_HOST" "127.0.0.1"
+  upsert_env_value "AXIS_RUNTIME_DB_PORT" "4406"
+  upsert_env_value "AXIS_RUNTIME_DB_NAME" "platform_runtime"
+  upsert_env_value "AXIS_DERIVED_DB_HOST" "127.0.0.1"
+  upsert_env_value "AXIS_DERIVED_DB_PORT" "4416"
+  upsert_env_value "AXIS_DERIVED_DB_NAME" "platform_derived"
+  echo -e "${BLUE}Axis DB routes:${NC} Core/Derived -> 4416 (asia authoritative), Runtime -> 4406 (regional)"
+  echo -e "${BLUE}Axis DB fallback:${NC} AXIS_DB_USER / AXIS_DB_PASSWORD / AXIS_DB_MAX_OPEN_CONNS / AXIS_DB_MAX_IDLE_CONNS remain shared."
+}
+
 echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}        Axis Update Installer           ${NC}"
 echo -e "${CYAN}========================================${NC}"
@@ -303,6 +318,8 @@ if ! sync_wt0_subnet_region; then
 else
   echo -e "${GREEN}AXIS_LOCAL_REGION / routing publisher updated from wt0.${NC}"
 fi
+
+sync_axis_db_routes
 
 if ! command -v go >/dev/null 2>&1; then
   echo -e "${RED}Error:${NC} Go toolchain not found in PATH."

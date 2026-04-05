@@ -52,6 +52,7 @@ flowchart TD
 | `node_health_by_region` | `AxisRuntime` | 区域健康表 | 区域本地化 |
 | `managed_nodes_history` | `AxisRuntime` | 区域运行态历史 | 区域本地化 |
 | `routing_observations` | `AxisRuntime` | 区域观测累加表 | 区域本地化 |
+| `managed_node_metrics_ext` | `AxisRuntime` | 区域指标扩展表 | 区域本地化 |
 | `regional_node_status_snapshots` | `AxisDerived` | 区域快照接收层 | 各区发布到亚洲中心 |
 | `aggregated_node_status` | `AxisDerived` | 全局一致读模型 | 亚洲中心聚合生成 + 全区只读 |
 | `routing_snapshot_manifests` | `AxisDerived` | 单权威派生产物 | 亚洲单点生成 + 全区复制 |
