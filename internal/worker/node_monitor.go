@@ -9,9 +9,10 @@ import (
 )
 
 type NodeMonitor struct {
-	nodeService *service.NodeService
-	timeoutSec  int
-	intervalSec int
+	nodeService    *service.NodeService
+	timeoutSec     int
+	intervalSec    int
+	cleanupEveryN  int
 }
 
 func NewNodeMonitor(nodeService *service.NodeService, timeoutSec, intervalSec int) *NodeMonitor {
@@ -21,11 +22,16 @@ func NewNodeMonitor(nodeService *service.NodeService, timeoutSec, intervalSec in
 	if intervalSec <= 0 {
 		intervalSec = 5
 	}
+	cleanupEveryN := 60 / intervalSec
+	if cleanupEveryN < 1 {
+		cleanupEveryN = 1
+	}
 
 	return &NodeMonitor{
-		nodeService: nodeService,
-		timeoutSec:  timeoutSec,
-		intervalSec: intervalSec,
+		nodeService:    nodeService,
+		timeoutSec:     timeoutSec,
+		intervalSec:    intervalSec,
+		cleanupEveryN:  cleanupEveryN,
 	}
 }
 
@@ -33,7 +39,10 @@ func (m *NodeMonitor) Run() {
 	ticker := time.NewTicker(time.Duration(m.intervalSec) * time.Second)
 	defer ticker.Stop()
 
+	ticks := 0
 	for range ticker.C {
+		ticks++
+
 		count, err := m.nodeService.MarkTimedOutNodesDown(context.Background(), m.timeoutSec)
 		if err != nil {
 			log.Printf("node monitor failed: %v", err)
@@ -41,6 +50,15 @@ func (m *NodeMonitor) Run() {
 		}
 		if count > 0 {
 			log.Printf("node monitor marked %d node(s) down after %d seconds without reports", count, m.timeoutSec)
+		}
+
+		if ticks%m.cleanupEveryN == 0 {
+			cleaned, err := m.nodeService.CleanupOrphanedHealthRows(context.Background())
+			if err != nil {
+				log.Printf("node monitor orphan cleanup failed: %v", err)
+			} else if cleaned > 0 {
+				log.Printf("node monitor cleaned %d orphaned health row(s)", cleaned)
+			}
 		}
 	}
 }

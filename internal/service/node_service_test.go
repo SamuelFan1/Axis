@@ -165,6 +165,10 @@ func (r *stubNodeRepository) MarkTimedOutNodesDown(ctx context.Context, localReg
 	return 0, nil
 }
 
+func (r *stubNodeRepository) CleanupOrphanedHealthRows(ctx context.Context, localRegion string) (int, error) {
+	return 0, nil
+}
+
 func (r *stubNodeRepository) UpsertHealth(ctx context.Context, item node.NodeHealth) error {
 	existing, ok := r.nodes[item.NodeUUID]
 	if !ok {

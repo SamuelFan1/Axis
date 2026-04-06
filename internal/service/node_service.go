@@ -289,6 +289,75 @@ func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zon
 	return selected, nil
 }
 
+func (s *NodeService) AssignMultiByRegionZone(ctx context.Context, region string, zone string, count int) ([]node.Node, error) {
+	region = strings.TrimSpace(strings.ToLower(region))
+	zone = strings.TrimSpace(strings.ToUpper(zone))
+
+	if region == "" {
+		return nil, fmt.Errorf("region is required")
+	}
+	if zone == "" {
+		return nil, fmt.Errorf("zone is required")
+	}
+	if count < 1 || count > 5 {
+		return nil, fmt.Errorf("count must be between 1 and 5")
+	}
+	if err := s.regionConfig.ValidateRegionZone(region, zone); err != nil {
+		return nil, err
+	}
+
+	items, err := s.readViewRepo().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	regionCandidates := filterUpNodesByRegion(items, region)
+	if len(regionCandidates) < count {
+		return nil, fmt.Errorf("insufficient nodes: need %d, available %d in region %s", count, len(regionCandidates), region)
+	}
+
+	zoneCandidates := filterNodesByZone(regionCandidates, zone)
+	if len(zoneCandidates) >= count {
+		return pickTopNNodes(zoneCandidates, count), nil
+	}
+
+	return pickTopNNodes(regionCandidates, count), nil
+}
+
+func pickTopNNodes(items []node.Node, n int) []node.Node {
+	if len(items) <= n {
+		shuffled := make([]node.Node, len(items))
+		copy(shuffled, items)
+		rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		return shuffled
+	}
+
+	type scored struct {
+		node  node.Node
+		score float64
+	}
+	scoredItems := make([]scored, len(items))
+	for i, item := range items {
+		scoredItems[i] = scored{node: item, score: weightedScore(item)}
+	}
+
+	for i := 0; i < n; i++ {
+		minIdx := i
+		for j := i + 1; j < len(scoredItems); j++ {
+			if scoredItems[j].score < scoredItems[minIdx].score {
+				minIdx = j
+			}
+		}
+		scoredItems[i], scoredItems[minIdx] = scoredItems[minIdx], scoredItems[i]
+	}
+
+	result := make([]node.Node, n)
+	for i := 0; i < n; i++ {
+		result[i] = scoredItems[i].node
+	}
+	return result
+}
+
 func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, error) {
 	item.UUID = strings.TrimSpace(item.UUID)
 	item.Hostname = strings.TrimSpace(item.Hostname)
@@ -586,6 +655,10 @@ func tunnelSourceHealthy(snapshot json.RawMessage, sourceName string) bool {
 	return false
 }
 
+func (s *NodeService) CleanupOrphanedHealthRows(ctx context.Context) (int, error) {
+	return s.healthRepo.CleanupOrphanedHealthRows(ctx, s.regionConfig.LocalRegion)
+}
+
 func (s *NodeService) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int) (int, error) {
 	if timeoutSec <= 0 {
 		timeoutSec = 30
@@ -593,10 +666,6 @@ func (s *NodeService) MarkTimedOutNodesDown(ctx context.Context, timeoutSec int)
 	return s.healthRepo.MarkTimedOutNodesDown(ctx, s.regionConfig.LocalRegion, timeoutSec)
 }
 
-func (s *NodeService) observerRegion(fallback string) string {
-	regionValue := strings.TrimSpace(strings.ToLower(s.regionConfig.LocalRegion))
-	if regionValue != "" {
-		return regionValue
-	}
-	return strings.TrimSpace(strings.ToLower(fallback))
+func (s *NodeService) observerRegion(nodeRegion string) string {
+	return strings.TrimSpace(strings.ToLower(nodeRegion))
 }

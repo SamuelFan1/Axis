@@ -555,6 +555,13 @@ AXIS_LOCAL_REGION=asia
 - `AXIS_AGGREGATION_PUBLISH_INTERVAL_SEC`
 - `AXIS_AGGREGATION_STALE_AFTER_SEC`
 
+运维约束：
+
+- `Axis/init.sh` 只负责本机 `AXIS_LOCAL_REGION` 和 `AXIS_*_DB_*` 路由收口。
+- `AXIS_AGGREGATION_*` 不由 `Axis/init.sh` 统一下发，当前由
+  [`/apps/tidb-cluster/tidb-cluster.sh axis-reconcile`](/apps/tidb-cluster/tidb-cluster.sh)
+  在部署后做单点集群级收口。
+
 启用建议：
 
 - 亚洲中心：

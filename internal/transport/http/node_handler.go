@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/SamuelFan1/Axis/internal/domain/node"
@@ -185,6 +186,54 @@ func (h *NodeHandler) Assign(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"node": item,
+	})
+}
+
+func (h *NodeHandler) AssignMulti(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	countStr := r.URL.Query().Get("count")
+	count := 3
+	if countStr != "" {
+		parsed, err := strconv.Atoi(countStr)
+		if err != nil || parsed < 1 || parsed > 5 {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"error": "count must be an integer between 1 and 5",
+			})
+			return
+		}
+		count = parsed
+	}
+
+	nodes, err := h.nodeService.AssignMultiByRegionZone(
+		r.Context(),
+		r.URL.Query().Get("region"),
+		r.URL.Query().Get("zone"),
+		count,
+	)
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		switch {
+		case strings.HasPrefix(err.Error(), "insufficient nodes"):
+			statusCode = http.StatusNotFound
+		case err.Error() == "node not found":
+			statusCode = http.StatusNotFound
+		case isAssignValidationError(err):
+			statusCode = http.StatusBadRequest
+		}
+		writeJSON(w, statusCode, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"nodes": nodes,
 	})
 }
 

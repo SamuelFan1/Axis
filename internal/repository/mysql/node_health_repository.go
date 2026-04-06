@@ -120,6 +120,74 @@ func (r *NodeRepository) MarkTimedOutNodesDown(ctx context.Context, localRegion 
 	return int(rowsAffected), nil
 }
 
+func (r *NodeRepository) CleanupOrphanedHealthRows(ctx context.Context, localRegion string) (int, error) {
+	localRegion = strings.TrimSpace(strings.ToLower(localRegion))
+	if localRegion == "" {
+		return 0, nil
+	}
+
+	coreRows, err := r.db.QueryContext(ctx,
+		`SELECT uuid FROM managed_nodes WHERE LOWER(TRIM(region)) = ?`, localRegion)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup orphaned health: query core: %w", err)
+	}
+	defer coreRows.Close()
+	legitimateUUIDs := make(map[string]struct{})
+	for coreRows.Next() {
+		var uuid string
+		if err := coreRows.Scan(&uuid); err != nil {
+			return 0, fmt.Errorf("cleanup orphaned health: scan core: %w", err)
+		}
+		legitimateUUIDs[uuid] = struct{}{}
+	}
+	if err := coreRows.Err(); err != nil {
+		return 0, fmt.Errorf("cleanup orphaned health: iterate core: %w", err)
+	}
+
+	runtimeRows, err := r.runtimeDB.QueryContext(ctx,
+		`SELECT node_uuid FROM node_health_by_region WHERE observer_region = ?`, localRegion)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup orphaned health: query runtime: %w", err)
+	}
+	defer runtimeRows.Close()
+
+	var orphanUUIDs []string
+	for runtimeRows.Next() {
+		var uuid string
+		if err := runtimeRows.Scan(&uuid); err != nil {
+			return 0, fmt.Errorf("cleanup orphaned health: scan: %w", err)
+		}
+		if _, ok := legitimateUUIDs[uuid]; !ok {
+			orphanUUIDs = append(orphanUUIDs, uuid)
+		}
+	}
+	if err := runtimeRows.Err(); err != nil {
+		return 0, fmt.Errorf("cleanup orphaned health: iterate: %w", err)
+	}
+
+	if len(orphanUUIDs) == 0 {
+		return 0, nil
+	}
+
+	placeholders := make([]string, len(orphanUUIDs))
+	args := make([]interface{}, 0, len(orphanUUIDs)+1)
+	args = append(args, localRegion)
+	for i, u := range orphanUUIDs {
+		placeholders[i] = "?"
+		args = append(args, u)
+	}
+
+	result, err := r.runtimeDB.ExecContext(ctx,
+		fmt.Sprintf(`DELETE FROM node_health_by_region WHERE observer_region = ? AND node_uuid IN (%s)`,
+			strings.Join(placeholders, ",")),
+		args...)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup orphaned health: delete: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
 func (r *NodeRepository) buildNodeViews(ctx context.Context, identities []node.NodeIdentity) ([]node.Node, error) {
 	if len(identities) == 0 {
 		return nil, nil
@@ -144,6 +212,13 @@ func (r *NodeRepository) buildNodeViews(ctx context.Context, identities []node.N
 		if loaded, ok := healthByNode[identity.UUID]; ok {
 			copied := loaded
 			health = &copied
+		} else {
+			health = &node.NodeHealth{
+				ObserverRegion: identity.Region,
+				NodeUUID:       identity.UUID,
+				Status:         node.StatusDown,
+				StatusSource:   "no_health_data",
+			}
 		}
 		aggregate := identity.Aggregate(health)
 		if metrics, ok := metricsByNode[identity.UUID]; ok {

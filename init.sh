@@ -82,11 +82,72 @@ detect_wt0_ipv4() {
   ip -o -4 addr show dev wt0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
 }
 
-# 根据 wt0 内网段写入 AXIS_LOCAL_REGION / AXIS_AUTHORITATIVE_REGION / 路由发布角色。
-# 约定：10.8.1.1–10.8.1.3 为亚洲控制面（仅 10.8.1.1 开启 AXIS_ROUTING_PUBLISHER，避免多实例写 KV）；
-#       10.8.1.x 其余为 asia 边缘；10.8.0/2/3 段对应北美/澳/欧。
-sync_wt0_subnet_region() {
-  local wt0_ip o1 o2 o3 o4
+# 根据 wt0 IP 的 10.8.x.y 自动写入所有区域/角色相关的 .env 配置。
+# 区域映射来源：.env 中的 AXIS_WT0_REGION_*_PREFIXES。
+# 角色判定：x 决定大区，y 决定节点角色（10.8.1.1 = 亚洲主控）。
+apply_region_role_config() {
+  local region="$1" o3="$2" o4="$3"
+  local is_asia_primary=false
+
+  echo -e "${YELLOW}Detected wt0:${NC} 10.8.${o3}.${o4} ${YELLOW}→ ${region}${NC}"
+
+  upsert_env_value "AXIS_LOCAL_REGION" "${region}"
+  upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
+  upsert_env_value "AXIS_AGGREGATION_ENABLED" "true"
+
+  if [[ "${o3}" == "1" && "${o4}" == "1" ]]; then
+    is_asia_primary=true
+  fi
+
+  if ${is_asia_primary}; then
+    echo -e "${GREEN}  Role:${NC} asia primary (10.8.1.1)"
+    upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "true"
+    upsert_env_value "AXIS_AGGREGATION_REGIONAL_PUBLISHER_ENABLED" "false"
+    upsert_env_value "AXIS_AGGREGATION_CENTRAL_RECEIVER_ENABLED" "true"
+    upsert_env_value "AXIS_AGGREGATION_CENTRAL_AGGREGATOR_ENABLED" "true"
+    upsert_env_value "AXIS_DNS_ENABLED" "true"
+  else
+    if [[ "${o3}" == "1" && "${o4}" =~ ^[23]$ ]]; then
+      echo -e "${BLUE}  Role:${NC} asia control-plane (.${o4})"
+    elif [[ "${o3}" == "1" ]]; then
+      echo -e "${BLUE}  Role:${NC} asia edge (.${o4})"
+    else
+      echo -e "${BLUE}  Role:${NC} ${region} node (.${o4})"
+    fi
+    upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
+    upsert_env_value "AXIS_AGGREGATION_REGIONAL_PUBLISHER_ENABLED" "true"
+    upsert_env_value "AXIS_AGGREGATION_CENTRAL_RECEIVER_ENABLED" "false"
+    upsert_env_value "AXIS_AGGREGATION_CENTRAL_AGGREGATOR_ENABLED" "false"
+    upsert_env_value "AXIS_DNS_ENABLED" "false"
+  fi
+
+  upsert_env_if_empty "AXIS_AGGREGATION_CENTER_API_URL" "http://10.8.1.1:9090"
+}
+
+upsert_env_if_empty() {
+  local key="$1" default_value="$2"
+  local current
+  current="$(python3 -c "
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+k = sys.argv[2]
+for line in p.read_text().splitlines():
+    s = line.strip()
+    if s and not s.startswith('#') and '=' in s:
+        ek, ev = s.split('=', 1)
+        if ek.strip() == k:
+            v = ev.strip().strip('\"').strip(\"'\")
+            if v:
+                print(v)
+                break
+" "${ENV_FILE}" "${key}" 2>/dev/null || true)"
+  if [[ -z "${current}" ]]; then
+    upsert_env_value "${key}" "${default_value}"
+  fi
+}
+
+detect_wt0_region_and_apply() {
+  local wt0_ip o1 o2 o3 o4 region
 
   wt0_ip="$(detect_wt0_ipv4 || true)"
   wt0_ip="$(printf '%s' "${wt0_ip}" | tr -d '[:space:]')"
@@ -101,51 +162,13 @@ sync_wt0_subnet_region() {
     return 1
   fi
 
-  case "${o3}" in
-  1)
-    echo -e "${YELLOW}Detected wt0:${NC} ${wt0_ip} ${YELLOW}(10.8.1.x → asia)${NC}"
-    upsert_env_value "AXIS_LOCAL_REGION" "asia"
-    upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
-    if [[ "${o4}" =~ ^[123]$ ]]; then
-      echo -e "${GREEN}  Role:${NC} asia control-plane master (.1–.3)"
-      if [[ "${o4}" == "1" ]]; then
-        upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "true"
-        echo -e "${GREEN}  Routing KV publisher:${NC} enabled (primary 10.8.1.1)"
-      else
-        upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
-        echo -e "${BLUE}  Routing KV publisher:${NC} disabled (avoid duplicate with 10.8.1.1)"
-      fi
-    else
-      echo -e "${BLUE}  Role:${NC} asia edge (not .1–.3)"
-      upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
-    fi
-    return 0
-    ;;
-  0)
-    echo -e "${YELLOW}Detected wt0:${NC} ${wt0_ip} ${YELLOW}(10.8.0.x → north_america)${NC}"
-    upsert_env_value "AXIS_LOCAL_REGION" "north_america"
-    upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
-    upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
-    return 0
-    ;;
-  2)
-    echo -e "${YELLOW}Detected wt0:${NC} ${wt0_ip} ${YELLOW}(10.8.2.x → australia)${NC}"
-    upsert_env_value "AXIS_LOCAL_REGION" "australia"
-    upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
-    upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
-    return 0
-    ;;
-  3)
-    echo -e "${YELLOW}Detected wt0:${NC} ${wt0_ip} ${YELLOW}(10.8.3.x → europe)${NC}"
-    upsert_env_value "AXIS_LOCAL_REGION" "europe"
-    upsert_env_value "AXIS_AUTHORITATIVE_REGION" "asia"
-    upsert_env_value "AXIS_ROUTING_PUBLISHER_ENABLED" "false"
-    return 0
-    ;;
-  *)
+  region="$(resolve_region_by_wt0_ip "${wt0_ip}" || true)"
+  if [[ -z "${region}" || "${region}" == "null" ]]; then
     return 1
-    ;;
-  esac
+  fi
+
+  apply_region_role_config "${region}" "${o3}" "${o4}"
+  return 0
 }
 
 extract_hostname_prefix() {
@@ -247,21 +270,7 @@ PY
 }
 
 sync_local_region_from_mapping() {
-  local hostname_value prefix region wt0_ip
-
-  wt0_ip="$(detect_wt0_ipv4 || true)"
-  if [[ -n "${wt0_ip}" ]]; then
-    region="$(resolve_region_by_wt0_ip "${wt0_ip}" || true)"
-    if [[ -n "${region}" && "${region}" != "null" ]]; then
-      echo -e "${YELLOW}Detected wt0 IPv4:${NC} ${wt0_ip}"
-      echo -e "${YELLOW}Updating AXIS_LOCAL_REGION in .env to:${NC} ${region}"
-      upsert_env_value "AXIS_LOCAL_REGION" "${region}"
-      return 0
-    fi
-    echo -e "${BLUE}wt0 IPv4 detected but no AXIS_WT0_REGION_* prefix matched; falling back to hostname mapping.${NC}"
-  else
-    echo -e "${BLUE}wt0 IPv4 not found; falling back to hostname mapping.${NC}"
-  fi
+  local hostname_value prefix region
 
   if [[ ! -f "${REGION_MAPPING_FILE}" ]]; then
     echo -e "${BLUE}Region mapping file not found; keeping existing AXIS_LOCAL_REGION in .env.${NC}"
@@ -293,17 +302,40 @@ sync_local_region_from_mapping() {
 
 sync_axis_db_routes() {
   echo -e "${YELLOW}Syncing Axis DB routes in .env...${NC}"
-  upsert_env_value "AXIS_CORE_DB_HOST" "127.0.0.1"
-  upsert_env_value "AXIS_CORE_DB_PORT" "4416"
-  upsert_env_value "AXIS_CORE_DB_NAME" "platform_core"
-  upsert_env_value "AXIS_RUNTIME_DB_HOST" "127.0.0.1"
-  upsert_env_value "AXIS_RUNTIME_DB_PORT" "4406"
-  upsert_env_value "AXIS_RUNTIME_DB_NAME" "platform_runtime"
-  upsert_env_value "AXIS_DERIVED_DB_HOST" "127.0.0.1"
-  upsert_env_value "AXIS_DERIVED_DB_PORT" "4416"
-  upsert_env_value "AXIS_DERIVED_DB_NAME" "platform_derived"
+  upsert_env_if_empty "AXIS_CORE_DB_HOST" "127.0.0.1"
+  upsert_env_if_empty "AXIS_CORE_DB_PORT" "4416"
+  upsert_env_if_empty "AXIS_CORE_DB_NAME" "platform_core"
+  upsert_env_if_empty "AXIS_RUNTIME_DB_HOST" "127.0.0.1"
+  upsert_env_if_empty "AXIS_RUNTIME_DB_PORT" "4406"
+  upsert_env_if_empty "AXIS_RUNTIME_DB_NAME" "platform_runtime"
+  upsert_env_if_empty "AXIS_DERIVED_DB_HOST" "127.0.0.1"
+  upsert_env_if_empty "AXIS_DERIVED_DB_PORT" "4416"
+  upsert_env_if_empty "AXIS_DERIVED_DB_NAME" "platform_derived"
+
+  comment_out_legacy_axis_db_name
+
   echo -e "${BLUE}Axis DB routes:${NC} Core/Derived -> 4416 (asia authoritative), Runtime -> 4406 (regional)"
-  echo -e "${BLUE}Axis DB fallback:${NC} AXIS_DB_USER / AXIS_DB_PASSWORD / AXIS_DB_MAX_OPEN_CONNS / AXIS_DB_MAX_IDLE_CONNS remain shared."
+}
+
+comment_out_legacy_axis_db_name() {
+  python3 - "${ENV_FILE}" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+lines = p.read_text().splitlines()
+out = []
+changed = False
+for line in lines:
+    s = line.strip()
+    if s and not s.startswith("#") and "=" in s:
+        k, v = s.split("=", 1)
+        if k.strip() == "AXIS_DB_NAME" and v.strip().strip('"').strip("'") == "AXIS":
+            out.append(f"# {line}  # deprecated: new DB names are platform_core/platform_runtime/platform_derived")
+            changed = True
+            continue
+    out.append(line)
+if changed:
+    p.write_text("\n".join(out) + "\n")
+PY
 }
 
 echo -e "${CYAN}========================================${NC}"
@@ -312,11 +344,11 @@ echo -e "${CYAN}========================================${NC}"
 
 echo -e "${BLUE}Project root:${NC} ${PROJECT_ROOT}"
 
-if ! sync_wt0_subnet_region; then
-  echo -e "${BLUE}wt0 subnet not matched (or wt0 missing); using hostname / AXIS_WT0_REGION_* mapping.${NC}"
+if ! detect_wt0_region_and_apply; then
+  echo -e "${BLUE}wt0 探测失败或前缀未匹配；回退到 hostname 映射。${NC}"
   sync_local_region_from_mapping
 else
-  echo -e "${GREEN}AXIS_LOCAL_REGION / routing publisher updated from wt0.${NC}"
+  echo -e "${GREEN}所有区域/角色配置已根据 wt0 自动更新。${NC}"
 fi
 
 sync_axis_db_routes

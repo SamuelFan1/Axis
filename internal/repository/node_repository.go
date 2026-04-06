@@ -25,6 +25,7 @@ type NodeHealthRepository interface {
 	FindLatestHealthByNodeUUID(ctx context.Context, nodeUUID string) (*node.NodeHealth, error)
 	GetMonitoringSnapshot(ctx context.Context, nodeUUID string) (json.RawMessage, error)
 	MarkTimedOutNodesDown(ctx context.Context, localRegion string, timeoutSec int) (int, error)
+	CleanupOrphanedHealthRows(ctx context.Context, localRegion string) (int, error)
 }
 
 type NodeViewRepository interface {

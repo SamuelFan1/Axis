@@ -111,7 +111,7 @@ func Load() (*Config, error) {
 			NodeTimeoutSec:         getEnvInt("AXIS_NODE_TIMEOUT_SEC", 30),
 			NodeMonitorIntervalSec: getEnvInt("AXIS_NODE_MONITOR_INTERVAL_SEC", 5),
 			AutoSchemaUpgrade:      getEnvBool("AXIS_AUTO_SCHEMA_UPGRADE", false),
-			AuthoritativeRegion:    strings.TrimSpace(strings.ToLower(getEnv("AXIS_AUTHORITATIVE_REGION", "asia"))),
+			AuthoritativeRegion:    strings.TrimSpace(strings.ToLower(getEnv("AXIS_AUTHORITATIVE_REGION", ""))),
 		},
 		Auth: AuthConfig{
 			AdminUsername:   getEnv("AXIS_ADMIN_USERNAME", ""),
@@ -201,7 +201,7 @@ func Load() (*Config, error) {
 		cfg.App.NodeMonitorIntervalSec = 5
 	}
 	if cfg.App.AuthoritativeRegion == "" {
-		cfg.App.AuthoritativeRegion = "asia"
+		return nil, fmt.Errorf("AXIS_AUTHORITATIVE_REGION must be set (typically 'asia')")
 	}
 	if strings.TrimSpace(cfg.DNS.RecordPrefix) == "" {
 		cfg.DNS.RecordPrefix = "dl-"
