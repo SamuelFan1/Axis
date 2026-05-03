@@ -159,7 +159,7 @@ func TestAggregatedNodeServiceRebuildUsesHomeRegionSnapshots(t *testing.T) {
 		},
 	}
 	aggregatedRepo := &stubAggregatedRepo{}
-	service := NewAggregatedNodeService(baseRepo, snapshotRepo, aggregatedRepo, 90)
+	service := NewAggregatedNodeService(baseRepo, snapshotRepo, aggregatedRepo, 90, nil)
 
 	count, err := service.Rebuild(context.Background())
 	if err != nil {

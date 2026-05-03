@@ -444,7 +444,7 @@ func (r *NodeRepository) ArchiveAndDeleteByManagementAddress(ctx context.Context
 		     swap_usage_percent, disk_usage_percent, disk_details, monitoring_snapshot,
 		     created_at, updated_at, last_seen_at, last_reported_at, archived_at,
 		     archive_reason, replaced_by_uuid
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), ?, NULLIF(?, ''))`,
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), ?, NULLIF(?, ''))`,
 		identity.UUID,
 		identity.Hostname,
 		identity.ManagementAddress,

@@ -486,6 +486,19 @@ func (s *NodeService) Report(ctx context.Context, item node.Node) (node.Node, er
 	return s.ensureCentralDNSBinding(ctx, updated)
 }
 
+func (s *NodeService) EnsureDNSBindingForNode(ctx context.Context, item node.Node) (node.Node, error) {
+	if !s.dnsConfig.Enabled || s.dnsProvider == nil || !s.dnsProvider.Enabled() {
+		return item, nil
+	}
+	if item.PublicIP == "" {
+		return item, nil
+	}
+	if s.dnsBindingRepo == nil {
+		return node.Node{}, fmt.Errorf("dns binding repository is not configured")
+	}
+	return s.ensureCentralDNSBinding(ctx, &item)
+}
+
 func (s *NodeService) GetMonitoringSnapshot(ctx context.Context, uuidValue string) (json.RawMessage, error) {
 	if hasRepositoryValue(s.globalViewRepo) {
 		return s.globalViewRepo.GetMonitoringSnapshot(ctx, uuidValue)

@@ -10,11 +10,14 @@ import (
 	"github.com/SamuelFan1/Axis/internal/repository"
 )
 
+type DNSBindingCallback func(ctx context.Context, item node.Node) (node.Node, error)
+
 type AggregatedNodeService struct {
 	baseViewRepo   repository.NodeViewRepository
 	snapshotRepo   repository.RegionalNodeStatusSnapshotRepository
 	aggregatedRepo repository.AggregatedNodeRepository
 	staleAfter     time.Duration
+	dnsBinder      DNSBindingCallback
 }
 
 func NewAggregatedNodeService(
@@ -22,6 +25,7 @@ func NewAggregatedNodeService(
 	snapshotRepo repository.RegionalNodeStatusSnapshotRepository,
 	aggregatedRepo repository.AggregatedNodeRepository,
 	staleAfterSec int,
+	dnsBinder DNSBindingCallback,
 ) *AggregatedNodeService {
 	if staleAfterSec <= 0 {
 		staleAfterSec = 90
@@ -31,6 +35,7 @@ func NewAggregatedNodeService(
 		snapshotRepo:   snapshotRepo,
 		aggregatedRepo: aggregatedRepo,
 		staleAfter:     time.Duration(staleAfterSec) * time.Second,
+		dnsBinder:      dnsBinder,
 	}
 }
 
@@ -88,6 +93,18 @@ func (s *AggregatedNodeService) Rebuild(ctx context.Context) (int, error) {
 			}
 		}
 		aggregated = append(aggregated, item)
+	}
+	for idx := range aggregated {
+		item := &aggregated[idx]
+		if s.dnsBinder == nil || item.PublicIP == "" || item.DNSName != "" {
+			continue
+		}
+		updated, err := s.dnsBinder(ctx, item.Node)
+		if err != nil {
+			return 0, fmt.Errorf("ensure dns binding for aggregated node %s: %w", item.UUID, err)
+		}
+		item.DNSLabel = updated.DNSLabel
+		item.DNSName = updated.DNSName
 	}
 	if err := s.aggregatedRepo.ReplaceAll(ctx, aggregated); err != nil {
 		return 0, fmt.Errorf("replace aggregated node status: %w", err)

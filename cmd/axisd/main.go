@@ -45,9 +45,11 @@ func main() {
 	workerAdminClient := workeradmin.NewClient(cfg.WorkerAdmin)
 	regionService := service.NewRegionService(regionRepo, nodeRepo, zoneRepo, cfg.Region)
 	zoneService := service.NewZoneService(zoneRepo, regionRepo, nodeRepo, nodeRepo, cfg.Region)
+	var nodeService *service.NodeService
 	if cfg.Aggregation.Enabled {
 		snapshotInboxRepo := mysql.NewRegionalNodeStatusSnapshotRepository(dbs.Derived)
 		aggregatedRepo = mysql.NewAggregatedNodeRepository(dbs.Derived)
+		nodeService = service.NewNodeService(nodeRepo, nodeRepo, nodeRepo, aggregatedRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
 		if cfg.App.AutoSchemaUpgrade {
 			if err := snapshotInboxRepo.EnsureSchema(ctx); err != nil {
 				log.Fatalf("ensure aggregation snapshot schema: %v", err)
@@ -60,7 +62,11 @@ func main() {
 			aggregationHandler = httptransport.NewAggregationHandler(snapshotInboxRepo)
 		}
 		if cfg.Aggregation.CentralAggregatorEnabled {
-			aggregatedNodeService := service.NewAggregatedNodeService(nodeRepo, snapshotInboxRepo, aggregatedRepo, cfg.Aggregation.StaleAfterSec)
+			var dnsBinder service.DNSBindingCallback
+			if cfg.Region.LocalRegion == cfg.App.AuthoritativeRegion && cfg.DNS.Enabled {
+				dnsBinder = nodeService.EnsureDNSBindingForNode
+			}
+			aggregatedNodeService := service.NewAggregatedNodeService(nodeRepo, snapshotInboxRepo, aggregatedRepo, cfg.Aggregation.StaleAfterSec, dnsBinder)
 			go worker.NewGlobalNodeAggregator(aggregatedNodeService, cfg.Aggregation.PublishIntervalSec).Run()
 		}
 		if cfg.Aggregation.RegionalPublisherEnabled {
@@ -74,7 +80,9 @@ func main() {
 			}
 		}
 	}
-	nodeService := service.NewNodeService(nodeRepo, nodeRepo, nodeRepo, aggregatedRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
+	if nodeService == nil {
+		nodeService = service.NewNodeService(nodeRepo, nodeRepo, nodeRepo, aggregatedRepo, regionRepo, zoneRepo, dnsProvider, dnsBindingRepo, cfg.DNS, cfg.Region, workerAdminClient)
+	}
 	if cfg.App.AutoSchemaUpgrade {
 		if err := regionRepo.EnsureSchema(ctx); err != nil {
 			log.Fatalf("ensure region schema: %v", err)
