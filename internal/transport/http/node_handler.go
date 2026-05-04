@@ -169,6 +169,7 @@ func (h *NodeHandler) Assign(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		r.URL.Query().Get("region"),
 		r.URL.Query().Get("zone"),
+		parseExcludeQuery(r),
 	)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
@@ -215,6 +216,7 @@ func (h *NodeHandler) AssignMulti(w http.ResponseWriter, r *http.Request) {
 		r.URL.Query().Get("region"),
 		r.URL.Query().Get("zone"),
 		count,
+		parseExcludeQuery(r),
 	)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
@@ -462,6 +464,25 @@ func isAssignValidationError(err error) bool {
 	default:
 		return false
 	}
+}
+
+func parseExcludeQuery(r *http.Request) []string {
+	if r == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get("exclude"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload interface{}) {

@@ -201,15 +201,18 @@ type serviceListMonitoringSource struct {
 }
 
 func serviceListReason(item node.Node) string {
-	if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusDown {
-		return ""
-	}
 	if len(item.MonitoringSnapshot) == 0 || string(item.MonitoringSnapshot) == "null" {
+		if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusDown {
+			return ""
+		}
 		return "reported down"
 	}
 
 	var snapshot serviceListMonitoringSnapshot
 	if err := json.Unmarshal(item.MonitoringSnapshot, &snapshot); err != nil {
+		if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusDown {
+			return ""
+		}
 		return "monitoring snapshot invalid"
 	}
 
@@ -234,6 +237,9 @@ func serviceListReason(item node.Node) string {
 		return fmt.Sprintf("%s: down", name)
 	}
 
+	if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusDown {
+		return ""
+	}
 	return "reported down"
 }
 

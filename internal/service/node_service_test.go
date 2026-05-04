@@ -572,8 +572,10 @@ func newPolicyNodeService(repo *stubNodeRepository, requireTunnel bool) *NodeSer
 		nil,
 		nil,
 		config.DNSConfig{
-			RequireCFTunnelHealth: requireTunnel,
-			CFTunnelSourceName:    "cloudflared",
+			RequireCFTunnelHealth:           requireTunnel,
+			CFTunnelSourceName:              "cloudflared",
+			CriticalMonitoringSources:       []string{"go-sidecar"},
+			RequireCriticalMonitoringSource: true,
 		},
 		config.RegionConfig{
 			Regions: []string{"asia"},
@@ -716,7 +718,7 @@ func TestAssignByRegionZonePrefersZoneLowestScore(t *testing.T) {
 		{UUID: "region-lower", Region: "asia", Zone: "JP", Status: node.StatusUp, DiskUsagePercent: 1, CPUUsagePercent: 1, MemoryUsagePercent: 1},
 	})
 
-	item, err := svc.AssignByRegionZone(context.Background(), "asia", "SG")
+	item, err := svc.AssignByRegionZone(context.Background(), "asia", "SG", nil)
 	if err != nil {
 		t.Fatalf("AssignByRegionZone returned error: %v", err)
 	}
@@ -731,7 +733,7 @@ func TestAssignByRegionZoneFallsBackToRegion(t *testing.T) {
 		{UUID: "region-up", Region: "asia", Zone: "JP", Status: node.StatusUp, DiskUsagePercent: 20, CPUUsagePercent: 20, MemoryUsagePercent: 20},
 	})
 
-	item, err := svc.AssignByRegionZone(context.Background(), "asia", "SG")
+	item, err := svc.AssignByRegionZone(context.Background(), "asia", "SG", nil)
 	if err != nil {
 		t.Fatalf("AssignByRegionZone returned error: %v", err)
 	}
@@ -747,7 +749,7 @@ func TestAssignByRegionZoneReturnsNotFoundWithoutUpNodes(t *testing.T) {
 		{UUID: "other-region-up", Region: "europe", Zone: "DE", Status: node.StatusUp},
 	})
 
-	_, err := svc.AssignByRegionZone(context.Background(), "asia", "SG")
+	_, err := svc.AssignByRegionZone(context.Background(), "asia", "SG", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -763,7 +765,7 @@ func TestAssignByRegionZoneReturnsOneOfLowestScoreTies(t *testing.T) {
 		{UUID: "worse", Region: "asia", Zone: "SG", Status: node.StatusUp, DiskUsagePercent: 60, CPUUsagePercent: 60, MemoryUsagePercent: 60},
 	})
 
-	item, err := svc.AssignByRegionZone(context.Background(), "asia", "SG")
+	item, err := svc.AssignByRegionZone(context.Background(), "asia", "SG", nil)
 	if err != nil {
 		t.Fatalf("AssignByRegionZone returned error: %v", err)
 	}
@@ -772,10 +774,41 @@ func TestAssignByRegionZoneReturnsOneOfLowestScoreTies(t *testing.T) {
 	}
 }
 
+func TestAssignByRegionZoneExcludesFailedNode(t *testing.T) {
+	svc := newTestNodeService([]node.Node{
+		{UUID: "failed-node", DNSName: "dl-172.nuxdisk.com", Hostname: "JP-CONTABO-FAILED", Region: "asia", Zone: "JP", Status: node.StatusUp, DiskUsagePercent: 1},
+		{UUID: "replacement-node", DNSName: "dl-173.nuxdisk.com", Hostname: "JP-CONTABO-REPLACEMENT", Region: "asia", Zone: "JP", Status: node.StatusUp, DiskUsagePercent: 50},
+	})
+
+	item, err := svc.AssignByRegionZone(context.Background(), "asia", "JP", []string{"failed-node", "dl-172.nuxdisk.com", "api-origin-jp-contabo-failed"})
+	if err != nil {
+		t.Fatalf("AssignByRegionZone returned error: %v", err)
+	}
+	if item.UUID != "replacement-node" {
+		t.Fatalf("expected replacement-node, got %s", item.UUID)
+	}
+}
+
+func TestAssignMultiByRegionZoneReturnsInsufficientAfterExclude(t *testing.T) {
+	svc := newTestNodeService([]node.Node{
+		{UUID: "node-a", DNSName: "dl-a.nuxdisk.com", Region: "asia", Zone: "JP", Status: node.StatusUp},
+		{UUID: "node-b", DNSName: "dl-b.nuxdisk.com", Region: "asia", Zone: "JP", Status: node.StatusUp},
+		{UUID: "node-c", DNSName: "dl-c.nuxdisk.com", Region: "asia", Zone: "JP", Status: node.StatusUp},
+	})
+
+	_, err := svc.AssignMultiByRegionZone(context.Background(), "asia", "JP", 3, []string{"node-b"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err.Error() != "insufficient nodes: need 3, available 2 in region asia" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestAssignByRegionZoneValidatesRegionZone(t *testing.T) {
 	svc := newTestNodeService(nil)
 
-	_, err := svc.AssignByRegionZone(context.Background(), "asia", "CN")
+	_, err := svc.AssignByRegionZone(context.Background(), "asia", "CN", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -900,6 +933,9 @@ func TestReportKeepsStatusWhenTunnelPolicyDisabled(t *testing.T) {
 	input.MonitoringSnapshot = monitoringSnapshot(t, map[string]string{
 		"name":   "cloudflared",
 		"status": "error",
+	}, map[string]string{
+		"name":   "go-sidecar",
+		"status": "ok",
 	})
 
 	item, err := svc.Report(context.Background(), input)
@@ -936,6 +972,9 @@ func TestReportForcesDownWhenTunnelSourceErrors(t *testing.T) {
 	input.MonitoringSnapshot = monitoringSnapshot(t, map[string]string{
 		"name":   "cloudflared",
 		"status": "error",
+	}, map[string]string{
+		"name":   "go-sidecar",
+		"status": "ok",
 	})
 
 	item, err := svc.Report(context.Background(), input)
@@ -954,6 +993,9 @@ func TestReportAllowsUpWhenTunnelSourceHealthy(t *testing.T) {
 	input.MonitoringSnapshot = monitoringSnapshot(t, map[string]string{
 		"name":   "cloudflared",
 		"status": "ok",
+	}, map[string]string{
+		"name":   "go-sidecar",
+		"status": "ok",
 	})
 
 	item, err := svc.Report(context.Background(), input)
@@ -962,6 +1004,70 @@ func TestReportAllowsUpWhenTunnelSourceHealthy(t *testing.T) {
 	}
 	if item.Status != node.StatusUp {
 		t.Fatalf("expected status up when tunnel source is healthy, got %s", item.Status)
+	}
+}
+
+func TestReportForcesDownWhenCriticalSourceErrors(t *testing.T) {
+	repo := newDNSRepository(newReportInput(""))
+	svc := newPolicyNodeService(repo, true)
+	input := newReportInput("")
+	input.MonitoringSnapshot = monitoringSnapshot(t, map[string]string{
+		"name":   "cloudflared",
+		"status": "ok",
+	}, map[string]string{
+		"name":   "go-sidecar",
+		"status": "error",
+	})
+
+	item, err := svc.Report(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Report returned error: %v", err)
+	}
+	if item.Status != node.StatusDown {
+		t.Fatalf("expected status down when critical source errors, got %s", item.Status)
+	}
+}
+
+func TestReportKeepsUpWhenCriticalSourcesHealthy(t *testing.T) {
+	repo := newDNSRepository(newReportInput(""))
+	svc := newPolicyNodeService(repo, true)
+	input := newReportInput("")
+	input.MonitoringSnapshot = monitoringSnapshot(t, map[string]string{
+		"name":   "cloudflared",
+		"status": "ok",
+	}, map[string]string{
+		"name":   "go-sidecar",
+		"status": "ok",
+	})
+
+	item, err := svc.Report(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Report returned error: %v", err)
+	}
+	if item.Status != node.StatusUp {
+		t.Fatalf("expected status up when critical sources are healthy, got %s", item.Status)
+	}
+}
+
+func TestReportKeepsDownWhenReportedDownEvenIfSourcesHealthy(t *testing.T) {
+	repo := newDNSRepository(newReportInput(""))
+	svc := newPolicyNodeService(repo, true)
+	input := newReportInput("")
+	input.Status = node.StatusDown
+	input.MonitoringSnapshot = monitoringSnapshot(t, map[string]string{
+		"name":   "cloudflared",
+		"status": "ok",
+	}, map[string]string{
+		"name":   "go-sidecar",
+		"status": "ok",
+	})
+
+	item, err := svc.Report(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Report returned error: %v", err)
+	}
+	if item.Status != node.StatusDown {
+		t.Fatalf("expected status down when reported down, got %s", item.Status)
 	}
 }
 

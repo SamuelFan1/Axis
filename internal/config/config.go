@@ -60,17 +60,19 @@ type DBConfig struct {
 }
 
 type DNSConfig struct {
-	Enabled               bool
-	Provider              string
-	Zone                  string
-	RecordPrefix          string
-	RecordType            string
-	TTL                   int
-	Proxied               bool
-	StateDir              string
-	CloudflareAPIToken    string
-	RequireCFTunnelHealth bool
-	CFTunnelSourceName    string
+	Enabled                         bool
+	Provider                        string
+	Zone                            string
+	RecordPrefix                    string
+	RecordType                      string
+	TTL                             int
+	Proxied                         bool
+	StateDir                        string
+	CloudflareAPIToken              string
+	RequireCFTunnelHealth           bool
+	CFTunnelSourceName              string
+	CriticalMonitoringSources       []string
+	RequireCriticalMonitoringSource bool
 }
 
 type RoutingConfig struct {
@@ -123,17 +125,19 @@ func Load() (*Config, error) {
 		RuntimeDB: loadDBConfig("AXIS_RUNTIME_DB", "AXIS_DB", "platform_runtime"),
 		DerivedDB: loadDBConfig("AXIS_DERIVED_DB", "AXIS_DB", "platform_derived"),
 		DNS: DNSConfig{
-			Enabled:               getEnvBool("AXIS_DNS_ENABLED", false),
-			Provider:              strings.ToLower(getEnv("AXIS_DNS_PROVIDER", "")),
-			Zone:                  strings.TrimSpace(getEnv("AXIS_DNS_ZONE", "")),
-			RecordPrefix:          getEnv("AXIS_DNS_RECORD_PREFIX", "dl-"),
-			RecordType:            strings.ToUpper(getEnv("AXIS_DNS_RECORD_TYPE", "A")),
-			TTL:                   getEnvInt("AXIS_DNS_TTL", 1),
-			Proxied:               getEnvBool("AXIS_DNS_PROXIED", false),
-			StateDir:              strings.TrimSpace(getEnv("AXIS_DNS_STATE_DIR", "/data/axis/dns-state")),
-			CloudflareAPIToken:    getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
-			RequireCFTunnelHealth: getEnvBool("AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH", false),
-			CFTunnelSourceName:    strings.TrimSpace(getEnv("AXIS_NODE_CF_TUNNEL_SOURCE_NAME", "cloudflared")),
+			Enabled:                         getEnvBool("AXIS_DNS_ENABLED", false),
+			Provider:                        strings.ToLower(getEnv("AXIS_DNS_PROVIDER", "")),
+			Zone:                            strings.TrimSpace(getEnv("AXIS_DNS_ZONE", "")),
+			RecordPrefix:                    getEnv("AXIS_DNS_RECORD_PREFIX", "dl-"),
+			RecordType:                      strings.ToUpper(getEnv("AXIS_DNS_RECORD_TYPE", "A")),
+			TTL:                             getEnvInt("AXIS_DNS_TTL", 1),
+			Proxied:                         getEnvBool("AXIS_DNS_PROXIED", false),
+			StateDir:                        strings.TrimSpace(getEnv("AXIS_DNS_STATE_DIR", "/data/axis/dns-state")),
+			CloudflareAPIToken:              getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
+			RequireCFTunnelHealth:           getEnvBool("AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH", false),
+			CFTunnelSourceName:              strings.TrimSpace(getEnv("AXIS_NODE_CF_TUNNEL_SOURCE_NAME", "cloudflared")),
+			CriticalMonitoringSources:       getEnvSlice("AXIS_NODE_CRITICAL_MONITORING_SOURCES", ",", "go-sidecar"),
+			RequireCriticalMonitoringSource: getEnvBool("AXIS_NODE_REQUIRE_CRITICAL_MONITORING_SOURCES", true),
 		},
 		Routing: RoutingConfig{
 			Enabled:                 getEnvBool("AXIS_ROUTING_ENABLED", false),
@@ -208,6 +212,9 @@ func Load() (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.DNS.CFTunnelSourceName) == "" {
 		cfg.DNS.CFTunnelSourceName = "cloudflared"
+	}
+	if len(cfg.DNS.CriticalMonitoringSources) == 0 {
+		cfg.DNS.CriticalMonitoringSources = []string{"go-sidecar"}
 	}
 	if cfg.DNS.RecordType == "" {
 		cfg.DNS.RecordType = "A"

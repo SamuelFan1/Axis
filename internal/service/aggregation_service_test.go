@@ -244,7 +244,7 @@ func TestNodeServicePrefersGlobalAggregatedReadModel(t *testing.T) {
 		t.Fatalf("expected global read model status up, got %+v", items)
 	}
 
-	assigned, err := svc.AssignByRegionZone(context.Background(), "asia", "SG")
+	assigned, err := svc.AssignByRegionZone(context.Background(), "asia", "SG", nil)
 	if err != nil {
 		t.Fatalf("AssignByRegionZone returned error: %v", err)
 	}

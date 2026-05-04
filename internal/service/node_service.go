@@ -249,7 +249,7 @@ func (s *NodeService) ListRegionZones(ctx context.Context) ([]node.RegionZoneSum
 	return s.readViewRepo().ListRegionZones(ctx)
 }
 
-func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zone string) (node.Node, error) {
+func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zone string, exclude []string) (node.Node, error) {
 	region = strings.TrimSpace(strings.ToLower(region))
 	zone = strings.TrimSpace(strings.ToUpper(zone))
 
@@ -268,7 +268,7 @@ func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zon
 		return node.Node{}, err
 	}
 
-	regionCandidates := filterUpNodesByRegion(items, region)
+	regionCandidates := filterExcludedNodes(filterUpNodesByRegion(items, region), exclude)
 	if len(regionCandidates) == 0 {
 		return node.Node{}, fmt.Errorf("node not found")
 	}
@@ -289,7 +289,7 @@ func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zon
 	return selected, nil
 }
 
-func (s *NodeService) AssignMultiByRegionZone(ctx context.Context, region string, zone string, count int) ([]node.Node, error) {
+func (s *NodeService) AssignMultiByRegionZone(ctx context.Context, region string, zone string, count int, exclude []string) ([]node.Node, error) {
 	region = strings.TrimSpace(strings.ToLower(region))
 	zone = strings.TrimSpace(strings.ToUpper(zone))
 
@@ -311,7 +311,7 @@ func (s *NodeService) AssignMultiByRegionZone(ctx context.Context, region string
 		return nil, err
 	}
 
-	regionCandidates := filterUpNodesByRegion(items, region)
+	regionCandidates := filterExcludedNodes(filterUpNodesByRegion(items, region), exclude)
 	if len(regionCandidates) < count {
 		return nil, fmt.Errorf("insufficient nodes: need %d, available %d in region %s", count, len(regionCandidates), region)
 	}
@@ -603,6 +603,44 @@ func filterNodesByZone(items []node.Node, zone string) []node.Node {
 	return candidates
 }
 
+func filterExcludedNodes(items []node.Node, exclude []string) []node.Node {
+	if len(exclude) == 0 {
+		return items
+	}
+	excluded := make(map[string]struct{}, len(exclude)*4)
+	for _, raw := range exclude {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" {
+			continue
+		}
+		excluded[value] = struct{}{}
+	}
+	if len(excluded) == 0 {
+		return items
+	}
+	candidates := make([]node.Node, 0, len(items))
+	for _, item := range items {
+		keys := []string{
+			item.UUID,
+			item.DNSName,
+			item.DNSLabel,
+			item.Hostname,
+			routing.OriginLabelForHostname(item.Hostname),
+		}
+		skip := false
+		for _, key := range keys {
+			if _, ok := excluded[strings.ToLower(strings.TrimSpace(key))]; ok {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			candidates = append(candidates, item)
+		}
+	}
+	return candidates
+}
+
 func pickLowestScoreNode(items []node.Node) (node.Node, bool) {
 	if len(items) == 0 {
 		return node.Node{}, false
@@ -632,40 +670,70 @@ func validatePercent(name string, value float64) error {
 }
 
 func (s *NodeService) applyMonitoringHealthPolicy(status string, snapshot json.RawMessage) string {
-	if !s.dnsConfig.RequireCFTunnelHealth {
-		return status
-	}
 	if strings.ToLower(strings.TrimSpace(status)) == node.StatusDown {
 		return node.StatusDown
 	}
-	if tunnelSourceHealthy(snapshot, s.dnsConfig.CFTunnelSourceName) {
-		return status
+	sources := monitoringSourcesByName(snapshot)
+	if s.dnsConfig.RequireCFTunnelHealth {
+		if !sourceHealthy(sources, s.dnsConfig.CFTunnelSourceName) {
+			return node.StatusDown
+		}
 	}
-	return node.StatusDown
-}
-
-func tunnelSourceHealthy(snapshot json.RawMessage, sourceName string) bool {
-	sourceName = strings.TrimSpace(sourceName)
-	if sourceName == "" || len(snapshot) == 0 {
-		return false
-	}
-
-	var payload struct {
-		Sources []struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-		} `json:"sources"`
-	}
-	if err := json.Unmarshal(snapshot, &payload); err != nil {
-		return false
-	}
-	for _, source := range payload.Sources {
-		if strings.TrimSpace(source.Name) != sourceName {
+	for _, sourceName := range s.dnsConfig.CriticalMonitoringSources {
+		sourceName = strings.TrimSpace(sourceName)
+		if sourceName == "" {
 			continue
 		}
-		return strings.EqualFold(strings.TrimSpace(source.Status), "ok")
+		source, ok := sources[sourceName]
+		if !ok {
+			if s.dnsConfig.RequireCriticalMonitoringSource {
+				return node.StatusDown
+			}
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(source.Status), "ok") {
+			return node.StatusDown
+		}
 	}
-	return false
+	return status
+}
+
+type monitoringSourceStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+func monitoringSourcesByName(snapshot json.RawMessage) map[string]monitoringSourceStatus {
+	result := map[string]monitoringSourceStatus{}
+	if len(snapshot) == 0 {
+		return result
+	}
+	var payload struct {
+		Sources []monitoringSourceStatus `json:"sources"`
+	}
+	if err := json.Unmarshal(snapshot, &payload); err != nil {
+		return result
+	}
+	for _, source := range payload.Sources {
+		name := strings.TrimSpace(source.Name)
+		if name == "" {
+			continue
+		}
+		result[name] = source
+	}
+	return result
+}
+
+func sourceHealthy(sources map[string]monitoringSourceStatus, sourceName string) bool {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		return false
+	}
+	source, ok := sources[sourceName]
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(source.Status), "ok")
 }
 
 func (s *NodeService) CleanupOrphanedHealthRows(ctx context.Context) (int, error) {
