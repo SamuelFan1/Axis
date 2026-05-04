@@ -607,6 +607,29 @@ Axis 可在 node 首次成功上报 `public_ip` 后，自动为该 node 分配�
 - Cloudflare 作为执行层按中心权威状态幂等更新，历史孤儿记录需要通过审计后人工清理
 - 只有 `public_ip` 非空时才会触发 DNS 写入；公网 IP 探测失败不会阻塞基础纳管和心跳数据落库
 
+### 辅助短域名 DNS 同步
+
+辅助 DNS 独立于上面的 `AXIS_DNS_ZONE`，用于维护按主机名前缀派生的短域名 A 记录。它不会替代 `dl-*.<AXIS_DNS_ZONE>` 主 DNS 绑定；主 DNS 继续使用 `dns_bindings` 与 `AXIS_DNS_ZONE`。
+
+配置项：
+
+- `AXIS_AUX_DNS_ENABLED`：是否启用辅助 DNS 同步，默认 `false`
+- `AXIS_AUX_DNS_ZONE`：辅助根域，例如 `example.org`
+- `AXIS_AUX_DNS_RECORD_TYPE`：默认且当前仅支持 `A`
+- `AXIS_AUX_DNS_TTL`：Cloudflare TTL，默认 `1`（自动）
+- `AXIS_AUX_DNS_PROXIED`：必须保持 `false`
+- `AXIS_AUX_DNS_SYNC_INTERVAL_SEC`：同步周期，默认 `60`
+- `AXIS_DNS_CLOUDFLARE_API_TOKEN`：复用主 DNS 的 Cloudflare token，必须具备辅助 Zone 的 DNS 编辑权限
+
+同步规则：
+
+- 仅权威区域的 `axisd` 执行辅助 DNS 同步，非权威区域只记录跳过日志
+- 读取与 `axis service-list` 同源的节点视图；启用聚合时读取 `aggregated_node_status`，否则读取本地节点视图
+- 只为 `status=up` 且 `public_ip` 非空的节点生成期望记录
+- 短名取主机名第一个 `-` 之前的前缀并归一化，例如 `TOKY-CONTABO-6V12G-SERVER-01` 生成 `toky.<aux-zone>`
+- 同名不同 IP 的多条 A 记录会保留，不做同名去重
+- 辅助 Zone 中不在当前期望集合里的 A 记录会被删除，因此已下线或不在 `service-list` 的节点会从辅助 DNS 中移除
+
 ## 可选监控快照
 
 Axis 当前已经支持 node 在心跳时附带通用 `monitoring_snapshot`。

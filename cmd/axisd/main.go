@@ -38,9 +38,11 @@ func main() {
 
 	dnsProvider := platformdns.NewNoopProvider()
 	var dnsBindingRepo *mysql.DNSBindingRepository
-	if cfg.DNS.Enabled && cfg.DNS.Provider == "cloudflare" {
+	if (cfg.DNS.Enabled || cfg.DNS.AuxiliaryEnabled) && cfg.DNS.Provider == "cloudflare" {
 		dnsProvider = platformdns.NewCloudflareProvider(cfg.DNS)
-		dnsBindingRepo = mysql.NewDNSBindingRepository(dbs.Core)
+		if cfg.DNS.Enabled {
+			dnsBindingRepo = mysql.NewDNSBindingRepository(dbs.Core)
+		}
 	}
 	workerAdminClient := workeradmin.NewClient(cfg.WorkerAdmin)
 	regionService := service.NewRegionService(regionRepo, nodeRepo, zoneRepo, cfg.Region)
@@ -205,6 +207,24 @@ func main() {
 				cfg.Routing.PublishIntervalSec,
 			)
 			go routingPublisher.Run()
+		}
+	}
+
+	if cfg.DNS.AuxiliaryEnabled {
+		if cfg.Region.LocalRegion == cfg.App.AuthoritativeRegion {
+			recordProvider := platformdns.NewCloudflareProviderForZone(cfg.DNS, cfg.DNS.AuxiliaryZone)
+			recordManager, ok := recordProvider.(platformdns.RecordManager)
+			if !ok {
+				log.Fatalf("auxiliary dns enabled but dns provider does not support record management")
+			}
+			var nodeViewRepo repository.NodeViewRepository = nodeRepo
+			if aggregatedRepo != nil {
+				nodeViewRepo = aggregatedRepo
+			}
+			auxiliaryDNSService := service.NewAuxiliaryDNSService(nodeViewRepo, recordManager, cfg.DNS)
+			go worker.NewAuxiliaryDNSSyncer(auxiliaryDNSService, cfg.DNS.AuxiliarySyncIntervalSec).Run()
+		} else {
+			log.Printf("auxiliary dns sync disabled on non-authoritative region: local=%s authoritative=%s", cfg.Region.LocalRegion, cfg.App.AuthoritativeRegion)
 		}
 	}
 

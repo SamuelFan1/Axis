@@ -69,6 +69,12 @@ type DNSConfig struct {
 	Proxied                         bool
 	StateDir                        string
 	CloudflareAPIToken              string
+	AuxiliaryEnabled                bool
+	AuxiliaryZone                   string
+	AuxiliaryRecordType             string
+	AuxiliaryTTL                    int
+	AuxiliaryProxied                bool
+	AuxiliarySyncIntervalSec        int
 	RequireCFTunnelHealth           bool
 	CFTunnelSourceName              string
 	CriticalMonitoringSources       []string
@@ -134,6 +140,12 @@ func Load() (*Config, error) {
 			Proxied:                         getEnvBool("AXIS_DNS_PROXIED", false),
 			StateDir:                        strings.TrimSpace(getEnv("AXIS_DNS_STATE_DIR", "/data/axis/dns-state")),
 			CloudflareAPIToken:              getEnv("AXIS_DNS_CLOUDFLARE_API_TOKEN", ""),
+			AuxiliaryEnabled:                getEnvBool("AXIS_AUX_DNS_ENABLED", false),
+			AuxiliaryZone:                   strings.TrimSpace(getEnv("AXIS_AUX_DNS_ZONE", "")),
+			AuxiliaryRecordType:             strings.ToUpper(getEnv("AXIS_AUX_DNS_RECORD_TYPE", "A")),
+			AuxiliaryTTL:                    getEnvInt("AXIS_AUX_DNS_TTL", 1),
+			AuxiliaryProxied:                getEnvBool("AXIS_AUX_DNS_PROXIED", false),
+			AuxiliarySyncIntervalSec:        getEnvInt("AXIS_AUX_DNS_SYNC_INTERVAL_SEC", 60),
 			RequireCFTunnelHealth:           getEnvBool("AXIS_NODE_REQUIRE_CF_TUNNEL_HEALTH", false),
 			CFTunnelSourceName:              strings.TrimSpace(getEnv("AXIS_NODE_CF_TUNNEL_SOURCE_NAME", "cloudflared")),
 			CriticalMonitoringSources:       getEnvSlice("AXIS_NODE_CRITICAL_MONITORING_SOURCES", ",", "go-sidecar"),
@@ -222,6 +234,15 @@ func Load() (*Config, error) {
 	if cfg.DNS.TTL < 0 {
 		cfg.DNS.TTL = 1
 	}
+	if cfg.DNS.AuxiliaryRecordType == "" {
+		cfg.DNS.AuxiliaryRecordType = "A"
+	}
+	if cfg.DNS.AuxiliaryTTL < 0 {
+		cfg.DNS.AuxiliaryTTL = 1
+	}
+	if cfg.DNS.AuxiliarySyncIntervalSec <= 0 {
+		cfg.DNS.AuxiliarySyncIntervalSec = 60
+	}
 	if cfg.DNS.Enabled {
 		if cfg.DNS.Provider != "cloudflare" {
 			return nil, fmt.Errorf("AXIS_DNS_PROVIDER must be cloudflare when AXIS_DNS_ENABLED is true")
@@ -240,6 +261,23 @@ func Load() (*Config, error) {
 		}
 		if strings.TrimSpace(cfg.DNS.CloudflareAPIToken) == "" {
 			return nil, fmt.Errorf("AXIS_DNS_CLOUDFLARE_API_TOKEN must be set when AXIS_DNS_ENABLED is true")
+		}
+	}
+	if cfg.DNS.AuxiliaryEnabled {
+		if cfg.DNS.Provider != "cloudflare" {
+			return nil, fmt.Errorf("AXIS_DNS_PROVIDER must be cloudflare when AXIS_AUX_DNS_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.DNS.AuxiliaryZone) == "" {
+			return nil, fmt.Errorf("AXIS_AUX_DNS_ZONE must be set when AXIS_AUX_DNS_ENABLED is true")
+		}
+		if cfg.DNS.AuxiliaryRecordType != "A" {
+			return nil, fmt.Errorf("AXIS_AUX_DNS_RECORD_TYPE must be A")
+		}
+		if cfg.DNS.AuxiliaryProxied {
+			return nil, fmt.Errorf("AXIS_AUX_DNS_PROXIED must be false when AXIS_AUX_DNS_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.DNS.CloudflareAPIToken) == "" {
+			return nil, fmt.Errorf("AXIS_DNS_CLOUDFLARE_API_TOKEN must be set when AXIS_AUX_DNS_ENABLED is true")
 		}
 	}
 

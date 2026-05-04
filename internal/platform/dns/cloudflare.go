@@ -31,7 +31,7 @@ type cloudflareEnvelope[T any] struct {
 	Errors  []struct {
 		Message string `json:"message"`
 	} `json:"errors"`
-	Result T `json:"result"`
+	Result     T `json:"result"`
 	ResultInfo struct {
 		Page       int `json:"page"`
 		PerPage    int `json:"per_page"`
@@ -56,8 +56,12 @@ type cloudflareDNSRecord struct {
 }
 
 func NewCloudflareProvider(cfg config.DNSConfig) Provider {
+	return NewCloudflareProviderForZone(cfg, cfg.Zone)
+}
+
+func NewCloudflareProviderForZone(cfg config.DNSConfig, zone string) Provider {
 	return &CloudflareProvider{
-		zone:     strings.Trim(strings.TrimSpace(cfg.Zone), "."),
+		zone:     strings.Trim(strings.TrimSpace(zone), "."),
 		apiToken: strings.TrimSpace(cfg.CloudflareAPIToken),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -149,6 +153,87 @@ func (p *CloudflareProvider) EnsureRecord(ctx context.Context, record Record) er
 	}
 
 	return p.createDNSRecord(ctx, zoneID, record)
+}
+
+func (p *CloudflareProvider) ListRecords(ctx context.Context, recordType string) ([]ManagedRecord, error) {
+	recordType = strings.ToUpper(strings.TrimSpace(recordType))
+	if recordType == "" {
+		recordType = "A"
+	}
+	zoneID, err := p.getZoneID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var records []ManagedRecord
+	page := 1
+	for {
+		values := url.Values{}
+		values.Set("type", recordType)
+		values.Set("page", strconv.Itoa(page))
+		values.Set("per_page", "100")
+
+		var resp cloudflareEnvelope[[]cloudflareDNSRecord]
+		if err := p.doJSON(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+values.Encode(), nil, &resp); err != nil {
+			return nil, fmt.Errorf("list cloudflare dns records: %w", err)
+		}
+		for _, item := range resp.Result {
+			records = append(records, ManagedRecord{
+				ID:      item.ID,
+				Name:    item.Name,
+				Type:    item.Type,
+				Content: item.Content,
+				TTL:     item.TTL,
+				Proxied: item.Proxied,
+			})
+		}
+
+		if resp.ResultInfo.TotalPages > 0 {
+			if page >= resp.ResultInfo.TotalPages {
+				break
+			}
+		} else if len(resp.Result) < 100 {
+			break
+		}
+		page++
+	}
+	return records, nil
+}
+
+func (p *CloudflareProvider) CreateRecord(ctx context.Context, record Record) error {
+	zoneID, err := p.getZoneID(ctx)
+	if err != nil {
+		return err
+	}
+	return p.createDNSRecord(ctx, zoneID, record)
+}
+
+func (p *CloudflareProvider) UpdateRecord(ctx context.Context, id string, record Record) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("dns record id is required")
+	}
+	zoneID, err := p.getZoneID(ctx)
+	if err != nil {
+		return err
+	}
+	return p.updateDNSRecord(ctx, zoneID, id, record)
+}
+
+func (p *CloudflareProvider) DeleteRecord(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("dns record id is required")
+	}
+	zoneID, err := p.getZoneID(ctx)
+	if err != nil {
+		return err
+	}
+	var resp cloudflareEnvelope[cloudflareDNSRecord]
+	if err := p.doJSON(ctx, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+id, nil, &resp); err != nil {
+		return fmt.Errorf("delete cloudflare dns record: %w", err)
+	}
+	return nil
 }
 
 func (p *CloudflareProvider) getZoneID(ctx context.Context) (string, error) {
