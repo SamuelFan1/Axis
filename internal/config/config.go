@@ -444,7 +444,7 @@ func loadEnvFile(path string) {
 }
 
 func loadRegionConfig() RegionConfig {
-	rawRegions := getEnvSlice("AXIS_REGIONS", ",", "asia,europe,australia,north_america,south_america")
+	rawRegions := getEnvSlice("AXIS_REGIONS", ",", "asia,europe,australia,north_america,middle_east")
 	regions := make([]string, 0, len(rawRegions))
 	regionZones := make(map[string][]string)
 	for _, regionName := range rawRegions {

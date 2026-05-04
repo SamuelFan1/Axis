@@ -391,7 +391,7 @@ cp .env.example .env
 
 区域与可用区配置（参考 ISO-3166-1 alpha-2）：
 
-- `AXIS_REGIONS`：大洲列表，默认 `asia,europe,australia,north_america,south_america`
+- `AXIS_REGIONS`：大洲列表，默认 `asia,europe,australia,north_america,middle_east`
 - `AXIS_LOCAL_REGION`：当前这台 `axisd` 所属区域，用于写入本区 `node_health_by_region`、执行本区超时下线，以及选择本区健康口径
 - `AXIS_REGION_ASIA_ZONES`、`AXIS_REGION_EUROPE_ZONES` 等：各大洲允许的 zone（国家代码），逗号分隔
 - `AXIS_WT0_REGION_NORTH_AMERICA_PREFIXES`、`AXIS_WT0_REGION_ASIA_PREFIXES` 等：`init.sh` 用于根据 `wt0` IPv4 前缀自动回填 `AXIS_LOCAL_REGION` 的可选配置
@@ -459,7 +459,7 @@ curl -X POST http://127.0.0.1:9090/api/v1/nodes/register \
 说明：
 
 - `uuid` 可选
-- `region` 为大洲：asia、europe、australia、north_america、south_america
+- `region` 为大洲：asia、europe、australia、north_america、middle_east
 - `zone` 为可用区，ISO-3166-1 alpha-2 国家代码（如 SG、CN、US）
 - 只有已在配置中声明的 `region/zone` 组合才能纳管或上报
 - 如果未提供，管理端会自动生成 `uuid4`
@@ -721,7 +721,7 @@ axis service-register \
 
 必填参数：
 
-- `--region`：大洲（asia、europe、australia、north_america、south_america）
+- `--region`：大洲（asia、europe、australia、north_america、middle_east）
 - `--zone`：可用区，ISO-3166-1 alpha-2 国家代码（如 SG、CN、US）
 
 说明：

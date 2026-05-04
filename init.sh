@@ -256,7 +256,7 @@ mapping = [
     ("asia", "AXIS_WT0_REGION_ASIA_PREFIXES"),
     ("australia", "AXIS_WT0_REGION_AUSTRALIA_PREFIXES"),
     ("europe", "AXIS_WT0_REGION_EUROPE_PREFIXES"),
-    ("south_america", "AXIS_WT0_REGION_SOUTH_AMERICA_PREFIXES"),
+    ("middle_east", "AXIS_WT0_REGION_MIDDLE_EAST_PREFIXES"),
 ]
 
 for region, key in mapping:
