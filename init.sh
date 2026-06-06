@@ -20,6 +20,9 @@ AXIS_TARGET="/usr/local/bin/axis"
 ENV_FILE="${PROJECT_ROOT}/.env"
 ENV_EXAMPLE_FILE="${PROJECT_ROOT}/.env.example"
 REGION_MAPPING_FILE="${PROJECT_ROOT}/../NetStone/NetStone/conf/server_region_mapping.yaml"
+GO_TOOLCHAIN_BASE="/usr/local"
+GO_TOOLCHAIN_DEFAULT_PATCH="${GO_TOOLCHAIN_DEFAULT_PATCH:-0}"
+GO_CMD=""
 
 if [[ ! -f "${PROJECT_ROOT}/README.md" ]]; then
   echo -e "${RED}Error:${NC} script must live in the Axis project root."
@@ -57,6 +60,109 @@ run_root() {
   else
     "$@"
   fi
+}
+
+go_required_version() {
+  awk '$1 == "go" { print $2; exit }' "${PROJECT_ROOT}/go.mod"
+}
+
+go_version_number() {
+  local go_bin="$1"
+  "${go_bin}" version 2>/dev/null | awk '{print $3}' | sed 's/^go//'
+}
+
+version_at_least() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+
+def parse(v):
+    out = []
+    for part in v.split("."):
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        out.append(int(digits or 0))
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out[:3])
+
+raise SystemExit(0 if parse(sys.argv[1]) >= parse(sys.argv[2]) else 1)
+PY
+}
+
+go_download_arch() {
+  local machine
+  machine="$(uname -m)"
+  case "${machine}" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *)
+      echo -e "${RED}Error:${NC} unsupported CPU architecture for Go auto-install: ${machine}" >&2
+      return 1
+      ;;
+  esac
+}
+
+go_install_version() {
+  local required="$1"
+  if [[ "${required}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    printf '%s.%s\n' "${required}" "${GO_TOOLCHAIN_DEFAULT_PATCH}"
+  else
+    printf '%s\n' "${required}"
+  fi
+}
+
+ensure_go_toolchain() {
+  local required install_version arch install_dir archive tmp_dir go_bin url
+  required="$(go_required_version)"
+  if [[ -z "${required}" ]]; then
+    echo -e "${RED}Error:${NC} cannot read Go version from ${PROJECT_ROOT}/go.mod."
+    exit 1
+  fi
+
+  if command -v go >/dev/null 2>&1; then
+    if version_at_least "$(go_version_number "$(command -v go)")" "${required}"; then
+      GO_CMD="$(command -v go)"
+      echo -e "${BLUE}Using system Go:${NC} $(${GO_CMD} version)"
+      return 0
+    fi
+  fi
+
+  install_version="$(go_install_version "${required}")"
+  arch="$(go_download_arch)"
+  install_dir="${GO_TOOLCHAIN_BASE}/go${install_version}"
+  go_bin="${install_dir}/bin/go"
+
+  if [[ -x "${go_bin}" ]] && version_at_least "$(go_version_number "${go_bin}")" "${required}"; then
+    GO_CMD="${go_bin}"
+    echo -e "${BLUE}Using local Go toolchain:${NC} $(${GO_CMD} version)"
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo -e "${RED}Error:${NC} curl is required to install Go ${install_version} for ${arch}."
+    exit 1
+  fi
+  if ! command -v tar >/dev/null 2>&1; then
+    echo -e "${RED}Error:${NC} tar is required to install Go ${install_version} for ${arch}."
+    exit 1
+  fi
+
+  tmp_dir="$(mktemp -d)"
+  archive="${tmp_dir}/go${install_version}.linux-${arch}.tar.gz"
+  url="https://go.dev/dl/go${install_version}.linux-${arch}.tar.gz"
+  echo -e "${YELLOW}Installing Go ${install_version} for ${arch} into ${install_dir}...${NC}"
+  curl -fL --retry 3 -o "${archive}" "${url}"
+  run_root rm -rf "${install_dir}"
+  run_root mkdir -p "${install_dir}"
+  run_root tar -C "${install_dir}" --strip-components=1 -xzf "${archive}"
+  rm -rf "${tmp_dir}"
+
+  GO_CMD="${go_bin}"
+  echo -e "${GREEN}Installed Go toolchain:${NC} $(${GO_CMD} version)"
 }
 
 resolve_node_hostname() {
@@ -144,6 +250,16 @@ for line in p.read_text().splitlines():
   if [[ -z "${current}" ]]; then
     upsert_env_value "${key}" "${default_value}"
   fi
+}
+
+env_value() {
+  local key="$1"
+  awk -F= -v key="${key}" '
+    $0 !~ /^[[:space:]]*#/ && $1 == key {
+      print $2
+      exit
+    }
+  ' "${ENV_FILE}"
 }
 
 detect_wt0_region_and_apply() {
@@ -314,7 +430,7 @@ sync_axis_db_routes() {
 
   comment_out_legacy_axis_db_name
 
-  echo -e "${BLUE}Axis DB routes:${NC} Core/Derived -> 4416 (asia authoritative), Runtime -> 4406 (regional)"
+  echo -e "${BLUE}Axis DB routes:${NC} Core -> $(env_value AXIS_CORE_DB_HOST):$(env_value AXIS_CORE_DB_PORT), Runtime -> $(env_value AXIS_RUNTIME_DB_HOST):$(env_value AXIS_RUNTIME_DB_PORT), Derived -> $(env_value AXIS_DERIVED_DB_HOST):$(env_value AXIS_DERIVED_DB_PORT)"
 }
 
 comment_out_legacy_axis_db_name() {
@@ -353,21 +469,18 @@ fi
 
 sync_axis_db_routes
 
-if ! command -v go >/dev/null 2>&1; then
-  echo -e "${RED}Error:${NC} Go toolchain not found in PATH."
-  exit 1
-fi
-
 if ! command -v systemctl >/dev/null 2>&1; then
   echo -e "${RED}Error:${NC} systemctl not found."
   exit 1
 fi
 
+ensure_go_toolchain
+
 echo -e "${YELLOW}Building latest axisd and axis binaries...${NC}"
 (
   cd "${PROJECT_ROOT}"
-  go build -o "${AXISD_OUTPUT}" ./cmd/axisd
-  go build -o "${AXIS_OUTPUT}" ./cmd/axis
+  GOTOOLCHAIN=local "${GO_CMD}" build -o "${AXISD_OUTPUT}" ./cmd/axisd
+  GOTOOLCHAIN=local "${GO_CMD}" build -o "${AXIS_OUTPUT}" ./cmd/axis
 )
 
 if run_root systemctl list-unit-files "${SERVICE_NAME}" >/dev/null 2>&1; then
