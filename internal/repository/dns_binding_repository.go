@@ -14,6 +14,7 @@ type DNSBindingSeedResult struct {
 
 type DNSBindingRepository interface {
 	EnsureSchema(ctx context.Context) error
+	List(ctx context.Context) ([]dnsbinding.Binding, error)
 	GetByNodeUUID(ctx context.Context, nodeUUID string) (*dnsbinding.Binding, error)
 	GetByDNSLabel(ctx context.Context, label string) (*dnsbinding.Binding, error)
 	AllocateForNode(ctx context.Context, nodeUUID string, zone string, prefix string) (*dnsbinding.Binding, error)

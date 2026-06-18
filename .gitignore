@@ -3,3 +3,5 @@ axis-rc.sh
 data/
 bin/
 dist/
+/axis
+/axisd

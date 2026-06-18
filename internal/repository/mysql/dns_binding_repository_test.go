@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -9,6 +10,69 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	mysqldriver "github.com/go-sql-driver/mysql"
 )
+
+func TestDNSBindingRepositoryList(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewDNSBindingRepository(db)
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	updatedAt := time.Now().UTC()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`
+SELECT node_uuid, dns_label, dns_name, zone, record_prefix, sequence, last_public_ip, created_at, updated_at
+FROM dns_bindings
+ORDER BY zone, record_prefix, sequence, node_uuid`)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"node_uuid", "dns_label", "dns_name", "zone", "record_prefix", "sequence", "last_public_ip", "created_at", "updated_at",
+		}).
+			AddRow("node-1", "dl-001", "dl-001.example.com", "example.com", "dl-", 1, "1.1.1.1", createdAt, updatedAt).
+			AddRow("node-2", "dl-002", "dl-002.example.com", "example.com", "dl-", 2, "2.2.2.2", createdAt, updatedAt))
+
+	bindings, err := repo.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(bindings) != 2 {
+		t.Fatalf("expected 2 bindings, got %d", len(bindings))
+	}
+	if bindings[0].NodeUUID != "node-1" || bindings[0].DNSName != "dl-001.example.com" || bindings[0].Sequence != 1 {
+		t.Fatalf("unexpected first binding: %+v", bindings[0])
+	}
+	if bindings[1].NodeUUID != "node-2" || bindings[1].LastPublicIP != "2.2.2.2" || !bindings[1].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("unexpected second binding: %+v", bindings[1])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+func TestDNSBindingRepositoryListReturnsQueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewDNSBindingRepository(db)
+	queryErr := errors.New("query failed")
+	mock.ExpectQuery(regexp.QuoteMeta(`
+SELECT node_uuid, dns_label, dns_name, zone, record_prefix, sequence, last_public_ip, created_at, updated_at
+FROM dns_bindings
+ORDER BY zone, record_prefix, sequence, node_uuid`)).
+		WillReturnError(queryErr)
+
+	bindings, err := repo.List(context.Background())
+	if !errors.Is(err, queryErr) {
+		t.Fatalf("expected query error, got bindings=%+v err=%v", bindings, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations: %v", err)
+	}
+}
 
 func TestDNSBindingRepositoryAllocateForNodeReturnsExistingBinding(t *testing.T) {
 	db, mock, err := sqlmock.New()

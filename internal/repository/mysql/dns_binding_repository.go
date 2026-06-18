@@ -87,6 +87,35 @@ CREATE TABLE IF NOT EXISTS dns_binding_counters (
 	return nil
 }
 
+func (r *DNSBindingRepository) List(ctx context.Context) (bindings []dnsbinding.Binding, err error) {
+	const query = `
+SELECT node_uuid, dns_label, dns_name, zone, record_prefix, sequence, last_public_ip, created_at, updated_at
+FROM dns_bindings
+ORDER BY zone, record_prefix, sequence, node_uuid`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list dns bindings: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close dns binding rows: %w", closeErr)
+		}
+	}()
+
+	for rows.Next() {
+		var item dnsbinding.Binding
+		if err := scanDNSBinding(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan dns binding: %w", err)
+		}
+		bindings = append(bindings, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dns bindings: %w", err)
+	}
+	return bindings, nil
+}
+
 func (r *DNSBindingRepository) GetByNodeUUID(ctx context.Context, nodeUUID string) (*dnsbinding.Binding, error) {
 	const query = `
 SELECT node_uuid, dns_label, dns_name, zone, record_prefix, sequence, last_public_ip, created_at, updated_at

@@ -409,11 +409,18 @@ go run ./cmd/axisd
 ```bash
 # 首次部署或后续更新（脚本会先停止 axisd.service，
 # 再替换 axisd/axis 二进制与 unit，最后重新启动；
+# init.sh 会根据 uname -m 自动进入 linux/amd64 或 linux/arm64 部署分支，
+# 在临时目录中构建并校验二进制架构，校验通过后才停止现有服务；
 # 如果检测到 wt0 网卡，会优先按 .env 中的 AXIS_WT0_REGION_* 前缀规则
 # 自动同步 AXIS_LOCAL_REGION；若未命中，则回退到 hostname 前缀映射）
 cd /apps/Axis
 ./init.sh
 ```
+
+`init.sh` 支持 `x86_64`/`amd64` 和 `aarch64`/`arm64`。不支持的 CPU
+架构会在修改 systemd 服务前终止。Go 工具链按版本和 CPU 架构分别安装，
+避免 ARM 与 x86 主机复用错误架构的工具链。仓库不再保存 `axis`、`axisd`
+预编译文件，部署二进制始终在目标主机上按检测到的架构生成。
 
 如果你想手动执行，同样建议先停服务再替换二进制，避免 `axisd` 正在运行时覆盖文件：
 

@@ -408,6 +408,17 @@ func (r *stubDNSBindingRepository) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
+func (r *stubDNSBindingRepository) List(ctx context.Context) ([]dnsbinding.Binding, error) {
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	items := make([]dnsbinding.Binding, 0, len(r.bindings))
+	for _, binding := range r.bindings {
+		items = append(items, binding)
+	}
+	return items, nil
+}
+
 func (r *stubDNSBindingRepository) GetByNodeUUID(ctx context.Context, nodeUUID string) (*dnsbinding.Binding, error) {
 	if r.getErr != nil {
 		return nil, r.getErr

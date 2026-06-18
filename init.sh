@@ -13,8 +13,6 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="axisd.service"
 SERVICE_FILE_SOURCE="${PROJECT_ROOT}/deployments/systemd/axisd.service"
 SERVICE_FILE_TARGET="/etc/systemd/system/${SERVICE_NAME}"
-AXISD_OUTPUT="${PROJECT_ROOT}/axisd"
-AXIS_OUTPUT="${PROJECT_ROOT}/axis"
 AXISD_TARGET="/usr/local/bin/axisd"
 AXIS_TARGET="/usr/local/bin/axis"
 ENV_FILE="${PROJECT_ROOT}/.env"
@@ -23,6 +21,10 @@ REGION_MAPPING_FILE="${PROJECT_ROOT}/../NetStone/NetStone/conf/server_region_map
 GO_TOOLCHAIN_BASE="/usr/local"
 GO_TOOLCHAIN_DEFAULT_PATCH="${GO_TOOLCHAIN_DEFAULT_PATCH:-0}"
 GO_CMD=""
+DEPLOY_ARCH=""
+BUILD_DIR=""
+AXISD_BUILD_OUTPUT=""
+AXIS_BUILD_OUTPUT=""
 
 if [[ ! -f "${PROJECT_ROOT}/README.md" ]]; then
   echo -e "${RED}Error:${NC} script must live in the Axis project root."
@@ -93,14 +95,14 @@ raise SystemExit(0 if parse(sys.argv[1]) >= parse(sys.argv[2]) else 1)
 PY
 }
 
-go_download_arch() {
+detect_cpu_arch() {
   local machine
   machine="$(uname -m)"
   case "${machine}" in
     x86_64|amd64) echo "amd64" ;;
     aarch64|arm64) echo "arm64" ;;
     *)
-      echo -e "${RED}Error:${NC} unsupported CPU architecture for Go auto-install: ${machine}" >&2
+      echo -e "${RED}Error:${NC} unsupported CPU architecture: ${machine}" >&2
       return 1
       ;;
   esac
@@ -116,7 +118,7 @@ go_install_version() {
 }
 
 ensure_go_toolchain() {
-  local required install_version arch install_dir archive tmp_dir go_bin url
+  local required install_version install_dir archive tmp_dir go_bin url
   required="$(go_required_version)"
   if [[ -z "${required}" ]]; then
     echo -e "${RED}Error:${NC} cannot read Go version from ${PROJECT_ROOT}/go.mod."
@@ -132,8 +134,7 @@ ensure_go_toolchain() {
   fi
 
   install_version="$(go_install_version "${required}")"
-  arch="$(go_download_arch)"
-  install_dir="${GO_TOOLCHAIN_BASE}/go${install_version}"
+  install_dir="${GO_TOOLCHAIN_BASE}/go${install_version}-${DEPLOY_ARCH}"
   go_bin="${install_dir}/bin/go"
 
   if [[ -x "${go_bin}" ]] && version_at_least "$(go_version_number "${go_bin}")" "${required}"; then
@@ -143,18 +144,18 @@ ensure_go_toolchain() {
   fi
 
   if ! command -v curl >/dev/null 2>&1; then
-    echo -e "${RED}Error:${NC} curl is required to install Go ${install_version} for ${arch}."
+    echo -e "${RED}Error:${NC} curl is required to install Go ${install_version} for ${DEPLOY_ARCH}."
     exit 1
   fi
   if ! command -v tar >/dev/null 2>&1; then
-    echo -e "${RED}Error:${NC} tar is required to install Go ${install_version} for ${arch}."
+    echo -e "${RED}Error:${NC} tar is required to install Go ${install_version} for ${DEPLOY_ARCH}."
     exit 1
   fi
 
   tmp_dir="$(mktemp -d)"
-  archive="${tmp_dir}/go${install_version}.linux-${arch}.tar.gz"
-  url="https://go.dev/dl/go${install_version}.linux-${arch}.tar.gz"
-  echo -e "${YELLOW}Installing Go ${install_version} for ${arch} into ${install_dir}...${NC}"
+  archive="${tmp_dir}/go${install_version}.linux-${DEPLOY_ARCH}.tar.gz"
+  url="https://go.dev/dl/go${install_version}.linux-${DEPLOY_ARCH}.tar.gz"
+  echo -e "${YELLOW}Installing Go ${install_version} for ${DEPLOY_ARCH} into ${install_dir}...${NC}"
   curl -fL --retry 3 -o "${archive}" "${url}"
   run_root rm -rf "${install_dir}"
   run_root mkdir -p "${install_dir}"
@@ -163,6 +164,126 @@ ensure_go_toolchain() {
 
   GO_CMD="${go_bin}"
   echo -e "${GREEN}Installed Go toolchain:${NC} $(${GO_CMD} version)"
+}
+
+cleanup_build_dir() {
+  if [[ -n "${BUILD_DIR}" && -d "${BUILD_DIR}" ]]; then
+    rm -rf "${BUILD_DIR}"
+  fi
+}
+
+prepare_build_dir() {
+  BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/axis-build.${DEPLOY_ARCH}.XXXXXX")"
+  AXISD_BUILD_OUTPUT="${BUILD_DIR}/axisd"
+  AXIS_BUILD_OUTPUT="${BUILD_DIR}/axis"
+}
+
+verify_binary_arch() {
+  local binary_path="$1"
+  local expected_arch="$2"
+  local description
+
+  if ! command -v file >/dev/null 2>&1; then
+    echo -e "${RED}Error:${NC} file is required to verify built binary architecture."
+    return 1
+  fi
+  if [[ ! -x "${binary_path}" ]]; then
+    echo -e "${RED}Error:${NC} built binary is missing or not executable: ${binary_path}"
+    return 1
+  fi
+
+  description="$(file -b "${binary_path}")"
+  case "${expected_arch}" in
+    amd64)
+      if [[ "${description}" != *"x86-64"* && "${description}" != *"x86_64"* ]]; then
+        echo -e "${RED}Error:${NC} expected amd64 binary, got: ${description}"
+        return 1
+      fi
+      ;;
+    arm64)
+      if [[ "${description}" != *"ARM aarch64"* && "${description}" != *"aarch64"* ]]; then
+        echo -e "${RED}Error:${NC} expected arm64 binary, got: ${description}"
+        return 1
+      fi
+      ;;
+    *)
+      echo -e "${RED}Error:${NC} unsupported verification architecture: ${expected_arch}"
+      return 1
+      ;;
+  esac
+
+  echo -e "${BLUE}Verified $(basename "${binary_path}"):${NC} ${description}"
+}
+
+build_binaries() {
+  local target_arch="$1"
+
+  case "${target_arch}" in
+    amd64|arm64) ;;
+    *)
+      echo -e "${RED}Error:${NC} unsupported build architecture: ${target_arch}"
+      return 1
+      ;;
+  esac
+
+  prepare_build_dir
+  echo -e "${YELLOW}Building axisd and axis for linux/${target_arch}...${NC}"
+  (
+    cd "${PROJECT_ROOT}"
+    GOTOOLCHAIN=local GOOS=linux GOARCH="${target_arch}" CGO_ENABLED=0 "${GO_CMD}" build -o "${AXISD_BUILD_OUTPUT}" ./cmd/axisd
+    GOTOOLCHAIN=local GOOS=linux GOARCH="${target_arch}" CGO_ENABLED=0 "${GO_CMD}" build -o "${AXIS_BUILD_OUTPUT}" ./cmd/axis
+  )
+  verify_binary_arch "${AXISD_BUILD_OUTPUT}" "${target_arch}"
+  verify_binary_arch "${AXIS_BUILD_OUTPUT}" "${target_arch}"
+}
+
+install_and_restart() {
+  if run_root systemctl list-unit-files "${SERVICE_NAME}" >/dev/null 2>&1; then
+    if run_root systemctl is-active --quiet "${SERVICE_NAME}"; then
+      echo -e "${YELLOW}Stopping ${SERVICE_NAME} before replacing binaries...${NC}"
+      run_root systemctl stop "${SERVICE_NAME}"
+    else
+      echo -e "${BLUE}${SERVICE_NAME} is not active.${NC}"
+    fi
+  else
+    echo -e "${BLUE}${SERVICE_NAME} is not installed yet.${NC}"
+  fi
+
+  echo -e "${YELLOW}Installing axisd to ${AXISD_TARGET}...${NC}"
+  run_root install -m 0755 "${AXISD_BUILD_OUTPUT}" "${AXISD_TARGET}"
+
+  echo -e "${YELLOW}Installing axis CLI to ${AXIS_TARGET}...${NC}"
+  run_root install -m 0755 "${AXIS_BUILD_OUTPUT}" "${AXIS_TARGET}"
+
+  echo -e "${YELLOW}Installing systemd unit to ${SERVICE_FILE_TARGET}...${NC}"
+  run_root install -m 0644 "${SERVICE_FILE_SOURCE}" "${SERVICE_FILE_TARGET}"
+
+  echo -e "${YELLOW}Reloading systemd daemon...${NC}"
+  run_root systemctl daemon-reload
+
+  echo -e "${YELLOW}Enabling and starting ${SERVICE_NAME}...${NC}"
+  run_root systemctl enable --now "${SERVICE_NAME}"
+
+  echo -e "${YELLOW}Verifying ${SERVICE_NAME} status...${NC}"
+  if run_root systemctl is-active --quiet "${SERVICE_NAME}"; then
+    echo -e "${GREEN}${SERVICE_NAME} is active.${NC}"
+  else
+    echo -e "${RED}${SERVICE_NAME} failed to start.${NC}"
+    run_root systemctl status "${SERVICE_NAME}" --no-pager || true
+    return 1
+  fi
+}
+
+deploy_amd64() {
+  echo -e "${BLUE}Selected deployment branch:${NC} linux/amd64"
+  build_binaries "amd64"
+  install_and_restart
+}
+
+deploy_arm64() {
+  echo -e "${BLUE}Selected deployment branch:${NC} linux/arm64"
+  build_binaries "arm64"
+  install_and_restart
 }
 
 resolve_node_hostname() {
@@ -460,6 +581,10 @@ echo -e "${CYAN}========================================${NC}"
 
 echo -e "${BLUE}Project root:${NC} ${PROJECT_ROOT}"
 
+DEPLOY_ARCH="$(detect_cpu_arch)"
+echo -e "${BLUE}Detected CPU architecture:${NC} $(uname -m) -> ${DEPLOY_ARCH}"
+trap cleanup_build_dir EXIT
+
 if ! detect_wt0_region_and_apply; then
   echo -e "${BLUE}wt0 探测失败或前缀未匹配；回退到 hostname 映射。${NC}"
   sync_local_region_from_mapping
@@ -476,49 +601,17 @@ fi
 
 ensure_go_toolchain
 
-echo -e "${YELLOW}Building latest axisd and axis binaries...${NC}"
-(
-  cd "${PROJECT_ROOT}"
-  GOTOOLCHAIN=local "${GO_CMD}" build -o "${AXISD_OUTPUT}" ./cmd/axisd
-  GOTOOLCHAIN=local "${GO_CMD}" build -o "${AXIS_OUTPUT}" ./cmd/axis
-)
-
-if run_root systemctl list-unit-files "${SERVICE_NAME}" >/dev/null 2>&1; then
-  if run_root systemctl is-active --quiet "${SERVICE_NAME}"; then
-    echo -e "${YELLOW}Stopping ${SERVICE_NAME} before replacing binaries...${NC}"
-    run_root systemctl stop "${SERVICE_NAME}"
-  else
-    echo -e "${BLUE}${SERVICE_NAME} is not active.${NC}"
-  fi
-else
-  echo -e "${BLUE}${SERVICE_NAME} is not installed yet.${NC}"
-fi
-
-echo -e "${YELLOW}Installing axisd to ${AXISD_TARGET}...${NC}"
-run_root install -m 0755 "${AXISD_OUTPUT}" "${AXISD_TARGET}"
-
-echo -e "${YELLOW}Installing axis CLI to ${AXIS_TARGET}...${NC}"
-run_root install -m 0755 "${AXIS_OUTPUT}" "${AXIS_TARGET}"
-
-echo -e "${YELLOW}Installing systemd unit to ${SERVICE_FILE_TARGET}...${NC}"
-run_root install -m 0644 "${SERVICE_FILE_SOURCE}" "${SERVICE_FILE_TARGET}"
-
-echo -e "${YELLOW}Reloading systemd daemon...${NC}"
-run_root systemctl daemon-reload
-
-echo -e "${YELLOW}Enabling and starting ${SERVICE_NAME}...${NC}"
-run_root systemctl enable --now "${SERVICE_NAME}"
-
-echo -e "${YELLOW}Verifying ${SERVICE_NAME} status...${NC}"
-if run_root systemctl is-active --quiet "${SERVICE_NAME}"; then
-  echo -e "${GREEN}${SERVICE_NAME} is active.${NC}"
-else
-  echo -e "${RED}${SERVICE_NAME} failed to start.${NC}"
-  run_root systemctl status "${SERVICE_NAME}" --no-pager || true
-  exit 1
-fi
+case "${DEPLOY_ARCH}" in
+  amd64) deploy_amd64 ;;
+  arm64) deploy_arm64 ;;
+  *)
+    echo -e "${RED}Error:${NC} no deployment branch for architecture: ${DEPLOY_ARCH}"
+    exit 1
+    ;;
+esac
 
 echo -e "${GREEN}Axis update applied successfully.${NC}"
+echo -e "${BLUE}Architecture:${NC} linux/${DEPLOY_ARCH}"
 echo -e "${BLUE}Daemon binary:${NC} ${AXISD_TARGET}"
 echo -e "${BLUE}CLI binary:${NC} ${AXIS_TARGET}"
 echo -e "${BLUE}Unit:${NC} ${SERVICE_FILE_TARGET}"
