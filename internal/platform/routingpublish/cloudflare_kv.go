@@ -120,8 +120,12 @@ func (p *CloudflareKVPublisher) PublishSnapshot(ctx context.Context, manifest ro
 	if err != nil {
 		return fmt.Errorf("marshal routing manifest for kv: %w", err)
 	}
+	manifestKey := strings.TrimSpace(manifest.Key)
+	if manifestKey == "" {
+		manifestKey = routing.ManifestKVKey
+	}
 	items = append(items, kvBulkItem{
-		Key:           routing.ManifestKVKey,
+		Key:           manifestKey,
 		Value:         string(manifestPayload),
 		ExpirationTTL: manifestTTL,
 	})

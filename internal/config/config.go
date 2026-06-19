@@ -15,6 +15,7 @@ type Config struct {
 	RuntimeDB   DBConfig
 	DerivedDB   DBConfig
 	DNS         DNSConfig
+	HQ          HQConfig
 	Routing     RoutingConfig
 	Aggregation AggregationConfig
 	WorkerAdmin WorkerAdminConfig
@@ -79,6 +80,20 @@ type DNSConfig struct {
 	CFTunnelSourceName              string
 	CriticalMonitoringSources       []string
 	RequireCriticalMonitoringSource bool
+}
+
+type HQConfig struct {
+	Enabled                 bool
+	DNSZone                 string
+	DNSRecordPrefix         string
+	DNSRecordType           string
+	DNSTTL                  int
+	DNSProxied              bool
+	DNSSyncIntervalSec      int
+	MonitoringSource        string
+	RoutingManifestKey      string
+	RoutingBundlePrefix     string
+	DerivedFromRecordPrefix string
 }
 
 type RoutingConfig struct {
@@ -150,6 +165,19 @@ func Load() (*Config, error) {
 			CFTunnelSourceName:              strings.TrimSpace(getEnv("AXIS_NODE_CF_TUNNEL_SOURCE_NAME", "cloudflared")),
 			CriticalMonitoringSources:       getEnvSlice("AXIS_NODE_CRITICAL_MONITORING_SOURCES", ",", "go-sidecar"),
 			RequireCriticalMonitoringSource: getEnvBool("AXIS_NODE_REQUIRE_CRITICAL_MONITORING_SOURCES", true),
+		},
+		HQ: HQConfig{
+			Enabled:                 getEnvBool("AXIS_HQ_ENABLED", false),
+			DNSZone:                 strings.TrimSpace(getEnv("AXIS_HQ_DNS_ZONE", "aiplexlink.com")),
+			DNSRecordPrefix:         strings.TrimSpace(getEnv("AXIS_HQ_DNS_RECORD_PREFIX", "n")),
+			DNSRecordType:           strings.ToUpper(getEnv("AXIS_HQ_DNS_RECORD_TYPE", "A")),
+			DNSTTL:                  getEnvInt("AXIS_HQ_DNS_TTL", 1),
+			DNSProxied:              getEnvBool("AXIS_HQ_DNS_PROXIED", false),
+			DNSSyncIntervalSec:      getEnvInt("AXIS_HQ_DNS_SYNC_INTERVAL_SEC", 60),
+			MonitoringSource:        strings.TrimSpace(getEnv("AXIS_HQ_MONITORING_SOURCE", "yt-dlp-hq")),
+			RoutingManifestKey:      strings.TrimSpace(getEnv("AXIS_HQ_ROUTING_MANIFEST_KEY", "hq:routing:manifest")),
+			RoutingBundlePrefix:     strings.TrimSpace(getEnv("AXIS_HQ_ROUTING_BUNDLE_PREFIX", "hq:routing:bundle:")),
+			DerivedFromRecordPrefix: strings.TrimSpace(getEnv("AXIS_HQ_DERIVED_FROM_RECORD_PREFIX", "dl-")),
 		},
 		Routing: RoutingConfig{
 			Enabled:                 getEnvBool("AXIS_ROUTING_ENABLED", false),
@@ -278,6 +306,53 @@ func Load() (*Config, error) {
 		}
 		if strings.TrimSpace(cfg.DNS.CloudflareAPIToken) == "" {
 			return nil, fmt.Errorf("AXIS_DNS_CLOUDFLARE_API_TOKEN must be set when AXIS_AUX_DNS_ENABLED is true")
+		}
+	}
+	if cfg.HQ.Enabled {
+		if cfg.DNS.Provider != "cloudflare" {
+			return nil, fmt.Errorf("AXIS_DNS_PROVIDER must be cloudflare when AXIS_HQ_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.HQ.DNSZone) == "" {
+			return nil, fmt.Errorf("AXIS_HQ_DNS_ZONE must be set when AXIS_HQ_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.HQ.DNSRecordPrefix) == "" {
+			return nil, fmt.Errorf("AXIS_HQ_DNS_RECORD_PREFIX must be set when AXIS_HQ_ENABLED is true")
+		}
+		if cfg.HQ.DNSRecordType != "A" {
+			return nil, fmt.Errorf("AXIS_HQ_DNS_RECORD_TYPE must be A")
+		}
+		if cfg.HQ.DNSProxied {
+			return nil, fmt.Errorf("AXIS_HQ_DNS_PROXIED must be false when AXIS_HQ_ENABLED is true")
+		}
+		if cfg.HQ.DNSTTL < 0 {
+			cfg.HQ.DNSTTL = 1
+		}
+		if cfg.HQ.DNSSyncIntervalSec <= 0 {
+			cfg.HQ.DNSSyncIntervalSec = 60
+		}
+		if strings.TrimSpace(cfg.HQ.MonitoringSource) == "" {
+			return nil, fmt.Errorf("AXIS_HQ_MONITORING_SOURCE must be set when AXIS_HQ_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.HQ.RoutingManifestKey) == "" {
+			return nil, fmt.Errorf("AXIS_HQ_ROUTING_MANIFEST_KEY must be set when AXIS_HQ_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.HQ.RoutingBundlePrefix) == "" {
+			return nil, fmt.Errorf("AXIS_HQ_ROUTING_BUNDLE_PREFIX must be set when AXIS_HQ_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.HQ.DerivedFromRecordPrefix) == "" {
+			return nil, fmt.Errorf("AXIS_HQ_DERIVED_FROM_RECORD_PREFIX must be set when AXIS_HQ_ENABLED is true")
+		}
+		if !cfg.Routing.Enabled || !cfg.Routing.SnapshotEnabled || !cfg.Routing.PublisherEnabled {
+			return nil, fmt.Errorf("AXIS_ROUTING_ENABLED, AXIS_ROUTING_SNAPSHOT_ENABLED and AXIS_ROUTING_PUBLISHER_ENABLED must be true when AXIS_HQ_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.DNS.CloudflareAPIToken) == "" {
+			return nil, fmt.Errorf("AXIS_DNS_CLOUDFLARE_API_TOKEN must be set when AXIS_HQ_ENABLED is true")
+		}
+		if !cfg.Aggregation.Enabled || !cfg.Aggregation.CentralAggregatorEnabled {
+			return nil, fmt.Errorf("AXIS_AGGREGATION_ENABLED and AXIS_AGGREGATION_CENTRAL_AGGREGATOR_ENABLED must be true when AXIS_HQ_ENABLED is true")
+		}
+		if cfg.Region.LocalRegion != cfg.App.AuthoritativeRegion {
+			return nil, fmt.Errorf("AXIS_HQ_ENABLED can only run in the authoritative region")
 		}
 	}
 

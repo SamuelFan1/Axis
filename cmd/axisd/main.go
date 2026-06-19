@@ -38,9 +38,9 @@ func main() {
 
 	dnsProvider := platformdns.NewNoopProvider()
 	var dnsBindingRepo *mysql.DNSBindingRepository
-	if (cfg.DNS.Enabled || cfg.DNS.AuxiliaryEnabled) && cfg.DNS.Provider == "cloudflare" {
+	if (cfg.DNS.Enabled || cfg.DNS.AuxiliaryEnabled || cfg.HQ.Enabled) && cfg.DNS.Provider == "cloudflare" {
 		dnsProvider = platformdns.NewCloudflareProvider(cfg.DNS)
-		if cfg.DNS.Enabled {
+		if cfg.DNS.Enabled || cfg.HQ.Enabled {
 			dnsBindingRepo = mysql.NewDNSBindingRepository(dbs.Core)
 		}
 	}
@@ -158,8 +158,10 @@ func main() {
 	}
 
 	var routingHandler *httptransport.RoutingHandler
+	var observationRepo *mysql.ObservationRepository
+	var publishService *service.RoutingPublishService
 	if cfg.Routing.Enabled {
-		observationRepo := mysql.NewObservationRepository(dbs.Runtime)
+		observationRepo = mysql.NewObservationRepository(dbs.Runtime)
 		snapshotRepo := mysql.NewRoutingSnapshotRepository(dbs.Derived)
 
 		if cfg.App.AutoSchemaUpgrade {
@@ -195,7 +197,7 @@ func main() {
 		if cfg.Routing.PublisherEnabled {
 			publisher = platformrouting.NewCloudflareKVPublisher(cfg.Routing)
 		}
-		publishService := service.NewRoutingPublishService(publisher)
+		publishService = service.NewRoutingPublishService(publisher)
 
 		if observationService != nil || snapshotService != nil {
 			routingHandler = httptransport.NewRoutingHandler(observationService, snapshotService, publishService)
@@ -226,6 +228,39 @@ func main() {
 		} else {
 			log.Printf("auxiliary dns sync disabled on non-authoritative region: local=%s authoritative=%s", cfg.Region.LocalRegion, cfg.App.AuthoritativeRegion)
 		}
+	}
+
+	if cfg.HQ.Enabled {
+		if aggregatedRepo == nil {
+			log.Fatalf("hq enabled but aggregated node repository is not configured")
+		}
+		if dnsBindingRepo == nil {
+			log.Fatalf("hq enabled but dns binding repository is not configured")
+		}
+		if observationRepo == nil {
+			log.Fatalf("hq enabled but routing observation repository is not configured")
+		}
+		if publishService == nil || !publishService.Enabled() {
+			log.Fatalf("hq enabled but routing publisher is not configured")
+		}
+		hqDNSProvider := platformdns.NewCloudflareProviderForZone(cfg.DNS, cfg.HQ.DNSZone)
+		hqDNSService := service.NewHQDNSService(aggregatedRepo, dnsBindingRepo, hqDNSProvider, cfg.HQ)
+		go worker.NewHQDNSSyncer(hqDNSService, cfg.HQ.DNSSyncIntervalSec).Run()
+
+		hqSnapshotService := service.NewHQRoutingSnapshotService(
+			observationRepo,
+			aggregatedRepo,
+			regionRepo,
+			zoneRepo,
+			dnsBindingRepo,
+			cfg.Routing,
+			cfg.HQ,
+		)
+		go worker.NewHQRoutingSnapshotPublisher(
+			hqSnapshotService,
+			publishService,
+			cfg.Routing.PublishIntervalSec,
+		).Run()
 	}
 
 	nodeMonitor := worker.NewNodeMonitor(

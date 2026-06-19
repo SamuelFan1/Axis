@@ -637,6 +637,39 @@ Axis 可在 node 首次成功上报 `public_ip` 后，自动为该 node 分配�
 - 同名不同 IP 的多条 A 记录会保留，不做同名去重
 - 辅助 Zone 中不在当前期望集合里的 A 记录会被删除，因此已下线或不在 `service-list` 的节点会从辅助 DNS 中移除
 
+### yt-dlp-hq DNS 与 KV 路由同步
+
+HQ 同步用于让 Axis 在已有 `dl-*.<AXIS_DNS_ZONE>` 稳定编号基础上，同时纳管 `n*.<AXIS_HQ_DNS_ZONE>`，供 YouTube HQ 下载调度使用。
+
+配置项：
+
+- `AXIS_HQ_ENABLED`：是否启用 HQ DNS 与 HQ routing snapshot 发布，默认 `false`
+- `AXIS_HQ_DNS_ZONE`：HQ 根域，当前为 `aiplexlink.com`
+- `AXIS_HQ_DNS_RECORD_PREFIX`：HQ 记录前缀，当前为 `n`
+- `AXIS_HQ_DNS_RECORD_TYPE`：默认且当前仅支持 `A`
+- `AXIS_HQ_DNS_TTL`：Cloudflare TTL，默认 `1`（自动）
+- `AXIS_HQ_DNS_PROXIED`：必须保持 `false`
+- `AXIS_HQ_DNS_SYNC_INTERVAL_SEC`：DNS 同步周期，默认 `60`
+- `AXIS_HQ_MONITORING_SOURCE`：axis-node 上报的 HQ readiness source，默认 `yt-dlp-hq`
+- `AXIS_HQ_ROUTING_MANIFEST_KEY`：HQ routing manifest KV key，默认 `hq:routing:manifest`
+- `AXIS_HQ_ROUTING_BUNDLE_PREFIX`：HQ routing bundle KV key 前缀，默认 `hq:routing:bundle:`
+- `AXIS_HQ_DERIVED_FROM_RECORD_PREFIX`：用于派生 HQ 编号的已有 DNS 前缀，默认 `dl-`
+
+启用约束：
+
+- 只能在亚洲权威中心聚合实例启用；非权威区域实例不得启用 `AXIS_HQ_ENABLED`
+- 必须同时启用 aggregation central aggregator、routing snapshot、routing publisher
+- 复用 `AXIS_DNS_CLOUDFLARE_API_TOKEN` 写入 DNS，复用 `AXIS_ROUTING_*` 写入 Cloudflare KV
+- HQ DNS 记录保持 DNS-only，`AXIS_HQ_DNS_PROXIED=false`
+
+同步规则：
+
+- HQ 域名从已有主 DNS 绑定派生，不单独分配序号：`dl-001` 生成 `n001.aiplexlink.com`，`dl-184` 生成 `n184.aiplexlink.com`
+- 只有 axis-node 监控快照中存在 `yt-dlp-hq` source 的节点才会生成 HQ DNS 记录
+- HQ routing snapshot 只包含同时满足 `status=up`、HQ 服务健康、YouTube session 已加载、readiness 为 ready 的节点
+- DOWN、无 session、服务不健康或未部署 HQ 的节点会离开 HQ routing snapshot，但不会自动删除既有 DNS 记录
+- HQ snapshot 使用独立 KV key，不覆盖 Nuxdisk 主 routing：`hq:routing:manifest` 与 `hq:routing:bundle:<region>`
+
 ## 可选监控快照
 
 Axis 当前已经支持 node 在心跳时附带通用 `monitoring_snapshot`。

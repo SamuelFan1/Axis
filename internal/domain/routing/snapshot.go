@@ -11,6 +11,7 @@ type Candidate struct {
 	NodeUUID       string    `json:"node_uuid"`
 	Hostname       string    `json:"hostname"`
 	OriginLabel    string    `json:"origin_label"`
+	ServiceHost    string    `json:"service_host,omitempty"`
 	Region         string    `json:"region"`
 	Zone           string    `json:"zone"`
 	Score          float64   `json:"score"`
@@ -35,6 +36,7 @@ type Bundle struct {
 }
 
 type Manifest struct {
+	Key              string                 `json:"key,omitempty"`
 	Version          string                 `json:"version"`
 	GeneratedAt      time.Time              `json:"generated_at"`
 	ExpiresAt        time.Time              `json:"expires_at"`
@@ -50,4 +52,11 @@ type Manifest struct {
 // and prevents unbounded KV key accumulation.
 func BundleKVKey(region string) string {
 	return fmt.Sprintf("routing:bundle:%s", region)
+}
+
+func BundleKVKeyWithPrefix(prefix string, region string) string {
+	if prefix == "" {
+		return BundleKVKey(region)
+	}
+	return fmt.Sprintf("%s%s", prefix, region)
 }
