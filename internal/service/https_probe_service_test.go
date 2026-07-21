@@ -119,6 +119,9 @@ func TestHTTPSProbeServiceChecksOnlyLocalRegionWithHTTPS443AndDeadline(t *testin
 	if req.URL.String() != "https://dl-184.nuxdisk.com:443/health" {
 		t.Fatalf("unexpected probe URL: %s", req.URL)
 	}
+	if req.Host != "dl-184.nuxdisk.com" {
+		t.Fatalf("unexpected probe Host header: %s", req.Host)
+	}
 	deadline, ok := req.Context().Deadline()
 	if !ok || deadline.Sub(started) > 250*time.Millisecond {
 		t.Fatalf("expected a 200ms request deadline, got %v", deadline.Sub(started))

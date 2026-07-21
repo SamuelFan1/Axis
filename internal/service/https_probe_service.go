@@ -136,6 +136,9 @@ func (s *HTTPSProbeService) checkPublicHTTPS(parent context.Context, dnsName str
 		result.Error = err.Error()
 		return result
 	}
+	// Caddy host matchers expect the DNS name without an explicit default port.
+	// The URL still dials 443, while the HTTP Host header remains canonical.
+	req.Host = host
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		result.Error = err.Error()
