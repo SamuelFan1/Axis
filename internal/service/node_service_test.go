@@ -29,6 +29,8 @@ type stubNodeRepository struct {
 	saveDNSBindingCalls []dnsBindingCall
 	archiveCalls        []archiveCall
 	updateStatusCalls   []dnsBindingCall
+	manualDisabled      map[string]bool
+	probeStates         map[string]node.HTTPSProbeState
 }
 
 type dnsBindingCall struct {
@@ -225,6 +227,79 @@ func (r *stubNodeRepository) GetMonitoringSnapshot(ctx context.Context, nodeUUID
 	return item.MonitoringSnapshot, nil
 }
 
+func (r *stubNodeRepository) EnsureAvailabilitySchema(ctx context.Context) error { return nil }
+
+func (r *stubNodeRepository) ListIdentitiesByRegion(ctx context.Context, region string) ([]node.NodeIdentity, error) {
+	var items []node.NodeIdentity
+	for _, item := range r.nodes {
+		if item.Region == region {
+			items = append(items, identityFromNode(item))
+		}
+	}
+	return items, nil
+}
+
+func (r *stubNodeRepository) LoadManualDisabled(ctx context.Context, nodeUUIDs []string) (map[string]bool, error) {
+	result := make(map[string]bool, len(nodeUUIDs))
+	for _, uuid := range nodeUUIDs {
+		result[uuid] = r.manualDisabled[uuid]
+	}
+	return result, nil
+}
+
+func (r *stubNodeRepository) SetManualDisabled(ctx context.Context, nodeUUID string, disabled bool) error {
+	if r.manualDisabled == nil {
+		r.manualDisabled = make(map[string]bool)
+	}
+	r.manualDisabled[nodeUUID] = disabled
+	return nil
+}
+
+func (r *stubNodeRepository) DeleteManualState(ctx context.Context, nodeUUID string) error {
+	delete(r.manualDisabled, nodeUUID)
+	return nil
+}
+
+func (r *stubNodeRepository) LoadHTTPSProbeStates(ctx context.Context, observerRegion string, nodeUUIDs []string) (map[string]node.HTTPSProbeState, error) {
+	result := make(map[string]node.HTTPSProbeState)
+	for _, uuid := range nodeUUIDs {
+		if state, ok := r.probeStates[uuid]; ok && state.ObserverRegion == observerRegion {
+			result[uuid] = state
+		}
+	}
+	return result, nil
+}
+
+func (r *stubNodeRepository) TryClaimHTTPSProbe(ctx context.Context, observerRegion, nodeUUID, owner string, now time.Time, leaseDuration time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (r *stubNodeRepository) RecordHTTPSProbeResult(ctx context.Context, observerRegion, nodeUUID, owner string, result node.HTTPSProbeResult, failureThreshold, recoveryThreshold int, interval time.Duration) (node.HTTPSProbeState, string, error) {
+	if r.probeStates == nil {
+		r.probeStates = make(map[string]node.HTTPSProbeState)
+	}
+	state := r.probeStates[nodeUUID]
+	state.ObserverRegion = observerRegion
+	state.NodeUUID = nodeUUID
+	next, transition := node.ApplyHTTPSProbeResult(state, result, failureThreshold, recoveryThreshold)
+	r.probeStates[nodeUUID] = next
+	return next, transition, nil
+}
+
+func (r *stubNodeRepository) ListIsolatedHTTPSProbeStates(ctx context.Context, observerRegion string) ([]node.HTTPSProbeState, error) {
+	var result []node.HTTPSProbeState
+	for _, state := range r.probeStates {
+		if state.ObserverRegion == observerRegion && state.Isolated {
+			result = append(result, state)
+		}
+	}
+	return result, nil
+}
+
+func (r *stubNodeRepository) CleanupOrphanedHTTPSProbeRows(ctx context.Context, observerRegion string) (int, error) {
+	return 0, nil
+}
+
 func identityFromNode(item node.Node) node.NodeIdentity {
 	return node.NodeIdentity{
 		UUID:              item.UUID,
@@ -340,6 +415,7 @@ type stubWorkerAdminClient struct {
 	disableErr   error
 	enableErr    error
 	manualStatus map[string]string
+	probeRegions map[string][]string
 }
 
 func (c *stubWorkerAdminClient) Enabled() bool {
@@ -376,15 +452,26 @@ func (c *stubWorkerAdminClient) GetManualNodeStatuses(ctx context.Context, origi
 	return result, nil
 }
 
+func (c *stubWorkerAdminClient) ReplaceHTTPSProbeBlacklist(ctx context.Context, region string, originLabels []string) error {
+	if c.probeRegions == nil {
+		c.probeRegions = make(map[string][]string)
+	}
+	c.probeRegions[region] = append([]string(nil), originLabels...)
+	return nil
+}
+
 func newTestNodeService(items []node.Node) *NodeService {
+	repo := &stubNodeRepository{items: items}
 	return &NodeService{
-		localViewRepo: &stubNodeRepository{items: items},
-		identityRepo:  &stubNodeRepository{items: items},
-		healthRepo:    &stubNodeRepository{items: items},
-		regionRepo:    &stubRegionRepository{},
-		zoneRepo:      &stubZoneRepository{},
+		localViewRepo:    repo,
+		identityRepo:     repo,
+		healthRepo:       repo,
+		availabilityRepo: repo,
+		regionRepo:       &stubRegionRepository{},
+		zoneRepo:         &stubZoneRepository{},
 		regionConfig: config.RegionConfig{
-			Regions: []string{"asia", "europe"},
+			LocalRegion: "asia",
+			Regions:     []string{"asia", "europe"},
 			RegionZones: map[string][]string{
 				"asia":   {"SG", "JP"},
 				"europe": {"DE"},
@@ -598,7 +685,7 @@ func newPolicyNodeService(repo *stubNodeRepository, requireTunnel bool) *NodeSer
 	)
 }
 
-func TestSetStatusDisablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testing.T) {
+func TestSetStatusPersistsManualMaintenanceWithoutUpdatingReportedStatus(t *testing.T) {
 	repo := newDNSRepository(node.Node{
 		UUID:     testNodeUUID,
 		Hostname: "SGP-DIGITALOCEAN-2V8G-SERVER-01",
@@ -628,8 +715,8 @@ func TestSetStatusDisablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testin
 	if !result.ExternalMaintenance || !result.WorkerSynced {
 		t.Fatalf("expected external maintenance synced, got %+v", result)
 	}
-	if result.Node.Status != node.StatusUp {
-		t.Fatalf("expected internal status unchanged, got %s", result.Node.Status)
+	if result.Node.Status != node.StatusDown || !result.Node.ManualDisabled {
+		t.Fatalf("expected effective manual status down, got %+v", result.Node)
 	}
 	if len(workerClient.disableCalls) != 1 || workerClient.disableCalls[0] != "api-origin-sgp-digitalocean-2v8g-server-01" {
 		t.Fatalf("unexpected disable calls: %+v", workerClient.disableCalls)
@@ -639,7 +726,7 @@ func TestSetStatusDisablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testin
 	}
 }
 
-func TestSetStatusEnablesExternalMaintenanceWithoutUpdatingNodeStatus(t *testing.T) {
+func TestSetStatusClearsManualMaintenanceWithoutUpdatingReportedStatus(t *testing.T) {
 	repo := newDNSRepository(node.Node{
 		UUID:     testNodeUUID,
 		Hostname: "DEFF-DIGITALOCEAN-2V8G-SERVER-03",
@@ -735,6 +822,27 @@ func TestAssignByRegionZonePrefersZoneLowestScore(t *testing.T) {
 	}
 	if item.UUID != "zone-low" {
 		t.Fatalf("expected zone-low, got %s", item.UUID)
+	}
+}
+
+func TestAssignByRegionZoneExcludesManualAndHTTPSProbeIsolation(t *testing.T) {
+	svc := newTestNodeService([]node.Node{
+		{UUID: "manual-node", Region: "asia", Zone: "SG", Status: node.StatusUp, DiskUsagePercent: 1},
+		{UUID: "probe-node", Region: "asia", Zone: "SG", Status: node.StatusUp, DiskUsagePercent: 2},
+		{UUID: "healthy-node", Region: "asia", Zone: "SG", Status: node.StatusUp, DiskUsagePercent: 50},
+	})
+	repo := svc.availabilityRepo.(*stubNodeRepository)
+	repo.manualDisabled = map[string]bool{"manual-node": true}
+	repo.probeStates = map[string]node.HTTPSProbeState{
+		"probe-node": {ObserverRegion: "asia", NodeUUID: "probe-node", Isolated: true, LastError: "connection refused"},
+	}
+
+	item, err := svc.AssignByRegionZone(context.Background(), "asia", "SG", nil)
+	if err != nil {
+		t.Fatalf("AssignByRegionZone returned error: %v", err)
+	}
+	if item.UUID != "healthy-node" {
+		t.Fatalf("expected only healthy-node to remain schedulable, got %s", item.UUID)
 	}
 }
 

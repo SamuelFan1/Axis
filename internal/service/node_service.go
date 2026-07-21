@@ -19,17 +19,18 @@ import (
 )
 
 type NodeService struct {
-	identityRepo   repository.NodeIdentityRepository
-	healthRepo     repository.NodeHealthRepository
-	localViewRepo  repository.NodeViewRepository
-	globalViewRepo repository.AggregatedNodeRepository
-	regionRepo     repository.RegionRepository
-	zoneRepo       repository.ZoneRepository
-	dnsProvider    platformdns.Provider
-	dnsBindingRepo repository.DNSBindingRepository
-	dnsConfig      config.DNSConfig
-	regionConfig   config.RegionConfig
-	workerAdmin    workeradmin.Client
+	identityRepo     repository.NodeIdentityRepository
+	healthRepo       repository.NodeHealthRepository
+	localViewRepo    repository.NodeViewRepository
+	globalViewRepo   repository.AggregatedNodeRepository
+	regionRepo       repository.RegionRepository
+	zoneRepo         repository.ZoneRepository
+	dnsProvider      platformdns.Provider
+	dnsBindingRepo   repository.DNSBindingRepository
+	dnsConfig        config.DNSConfig
+	regionConfig     config.RegionConfig
+	workerAdmin      workeradmin.Client
+	availabilityRepo repository.NodeAvailabilityRepository
 }
 
 type NodeStatusResult struct {
@@ -39,18 +40,20 @@ type NodeStatusResult struct {
 }
 
 func NewNodeService(identityRepo repository.NodeIdentityRepository, healthRepo repository.NodeHealthRepository, localViewRepo repository.NodeViewRepository, globalViewRepo repository.AggregatedNodeRepository, regionRepo repository.RegionRepository, zoneRepo repository.ZoneRepository, dnsProvider platformdns.Provider, dnsBindingRepo repository.DNSBindingRepository, dnsConfig config.DNSConfig, regionConfig config.RegionConfig, workerAdmin workeradmin.Client) *NodeService {
+	availabilityRepo, _ := identityRepo.(repository.NodeAvailabilityRepository)
 	return &NodeService{
-		identityRepo:   identityRepo,
-		healthRepo:     healthRepo,
-		localViewRepo:  localViewRepo,
-		globalViewRepo: globalViewRepo,
-		regionRepo:     regionRepo,
-		zoneRepo:       zoneRepo,
-		dnsProvider:    dnsProvider,
-		dnsBindingRepo: dnsBindingRepo,
-		dnsConfig:      dnsConfig,
-		regionConfig:   regionConfig,
-		workerAdmin:    workerAdmin,
+		identityRepo:     identityRepo,
+		healthRepo:       healthRepo,
+		localViewRepo:    localViewRepo,
+		globalViewRepo:   globalViewRepo,
+		regionRepo:       regionRepo,
+		zoneRepo:         zoneRepo,
+		dnsProvider:      dnsProvider,
+		dnsBindingRepo:   dnsBindingRepo,
+		dnsConfig:        dnsConfig,
+		regionConfig:     regionConfig,
+		workerAdmin:      workerAdmin,
+		availabilityRepo: availabilityRepo,
 	}
 }
 
@@ -154,7 +157,11 @@ func (s *NodeService) Register(ctx context.Context, item node.Node) (node.Node, 
 }
 
 func (s *NodeService) List(ctx context.Context) ([]node.Node, error) {
-	return s.readViewRepo().List(ctx)
+	items, err := s.readViewRepo().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyEffectiveAvailability(ctx, items)
 }
 
 func (s *NodeService) GetByUUID(ctx context.Context, uuidValue string) (node.Node, error) {
@@ -173,7 +180,11 @@ func (s *NodeService) GetByUUID(ctx context.Context, uuidValue string) (node.Nod
 	if item == nil {
 		return node.Node{}, fmt.Errorf("node not found")
 	}
-	return *item, nil
+	items, err := s.applyEffectiveAvailability(ctx, []node.Node{*item})
+	if err != nil {
+		return node.Node{}, err
+	}
+	return items[0], nil
 }
 
 func (s *NodeService) DeleteByUUID(ctx context.Context, uuidValue string) error {
@@ -216,26 +227,49 @@ func (s *NodeService) SetStatus(ctx context.Context, uuidValue string, status st
 	if item == nil {
 		return NodeStatusResult{}, fmt.Errorf("node not found")
 	}
+	if s.availabilityRepo == nil {
+		return NodeStatusResult{}, fmt.Errorf("node availability repository is not configured")
+	}
 	if s.workerAdmin == nil || !s.workerAdmin.Enabled() {
 		return NodeStatusResult{}, fmt.Errorf("worker admin is not configured")
 	}
 
 	originLabel := routing.OriginLabelForHostname(item.Hostname)
 	if status == node.StatusDown {
+		if err := s.availabilityRepo.SetManualDisabled(ctx, uuidValue, true); err != nil {
+			return NodeStatusResult{}, err
+		}
 		if err := s.workerAdmin.DisableNode(ctx, originLabel); err != nil {
 			return NodeStatusResult{}, err
 		}
+		item.ManualDisabled = true
+		item.Status = node.StatusDown
+		item.StatusReason = "manual maintenance"
 		return NodeStatusResult{
 			Node:                *item,
 			ExternalMaintenance: true,
 			WorkerSynced:        true,
 		}, nil
 	}
+	if err := s.availabilityRepo.SetManualDisabled(ctx, uuidValue, false); err != nil {
+		return NodeStatusResult{}, err
+	}
 	if err := s.workerAdmin.EnableNode(ctx, originLabel); err != nil {
 		return NodeStatusResult{}, err
 	}
+	updated, err := s.readViewRepo().FindByUUID(ctx, uuidValue)
+	if err != nil {
+		return NodeStatusResult{}, err
+	}
+	if updated == nil {
+		return NodeStatusResult{}, fmt.Errorf("node not found")
+	}
+	effective, err := s.applyEffectiveAvailability(ctx, []node.Node{*updated})
+	if err != nil {
+		return NodeStatusResult{}, err
+	}
 	return NodeStatusResult{
-		Node:                *item,
+		Node:                effective[0],
 		ExternalMaintenance: false,
 		WorkerSynced:        true,
 	}, nil
@@ -264,6 +298,10 @@ func (s *NodeService) AssignByRegionZone(ctx context.Context, region string, zon
 	}
 
 	items, err := s.readViewRepo().List(ctx)
+	if err != nil {
+		return node.Node{}, err
+	}
+	items, err = s.applyEffectiveAvailability(ctx, items)
 	if err != nil {
 		return node.Node{}, err
 	}
@@ -307,6 +345,10 @@ func (s *NodeService) AssignMultiByRegionZone(ctx context.Context, region string
 	}
 
 	items, err := s.readViewRepo().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items, err = s.applyEffectiveAvailability(ctx, items)
 	if err != nil {
 		return nil, err
 	}
@@ -590,6 +632,58 @@ func filterUpNodesByRegion(items []node.Node, region string) []node.Node {
 		candidates = append(candidates, item)
 	}
 	return candidates
+}
+
+func (s *NodeService) applyEffectiveAvailability(ctx context.Context, items []node.Node) ([]node.Node, error) {
+	if len(items) == 0 || s.availabilityRepo == nil {
+		return items, nil
+	}
+	if s.globalViewRepo != nil && s.localViewRepo != nil {
+		localItems, err := s.localViewRepo.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load local node availability: %w", err)
+		}
+		localByUUID := make(map[string]node.Node, len(localItems))
+		for _, item := range localItems {
+			if strings.EqualFold(strings.TrimSpace(item.Region), strings.TrimSpace(s.regionConfig.LocalRegion)) {
+				localByUUID[item.UUID] = item
+			}
+		}
+		for idx := range items {
+			if local, ok := localByUUID[items[idx].UUID]; ok {
+				items[idx].Status = local.Status
+				items[idx].StatusReason = local.StatusReason
+				items[idx].ManualDisabled = local.ManualDisabled
+				items[idx].HTTPSProbeIsolated = local.HTTPSProbeIsolated
+			}
+		}
+	}
+
+	uuids := make([]string, 0, len(items))
+	localUUIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		uuids = append(uuids, item.UUID)
+		if strings.EqualFold(strings.TrimSpace(item.Region), strings.TrimSpace(s.regionConfig.LocalRegion)) {
+			localUUIDs = append(localUUIDs, item.UUID)
+		}
+	}
+	manualByNode, err := s.availabilityRepo.LoadManualDisabled(ctx, uuids)
+	if err != nil {
+		return nil, err
+	}
+	probeByNode, err := s.availabilityRepo.LoadHTTPSProbeStates(ctx, s.regionConfig.LocalRegion, localUUIDs)
+	if err != nil {
+		return nil, err
+	}
+	for idx := range items {
+		probe, ok := probeByNode[items[idx].UUID]
+		if ok {
+			node.ApplyAvailability(&items[idx], manualByNode[items[idx].UUID], &probe)
+		} else {
+			node.ApplyAvailability(&items[idx], manualByNode[items[idx].UUID], nil)
+		}
+	}
+	return items, nil
 }
 
 func filterNodesByZone(items []node.Node, zone string) []node.Node {

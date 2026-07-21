@@ -828,9 +828,9 @@ axis service-up <uuid>
 
 说明：
 
-- 该命令仅恢复 `Cloudflare Worker` 外部用户流量到该节点
+- 该命令清除持久人工维护状态，并恢复 `Cloudflare Worker` 人工路由状态
+- 如果节点仍被公网 HTTPS 探测或心跳健康策略隔离，有效状态继续保持 `down`
 - 不会中断或恢复 `cloudflared tunnel`
-- 不会影响内部 `Axis /api/v1/nodes/assign`、节点心跳或内部服务访问
 
 ### 设置服务器为 down
 
@@ -840,9 +840,16 @@ axis service-down <uuid>
 
 说明：
 
-- 该命令仅将该节点从 `Cloudflare Worker` 外部用户流量中摘除
+- 该命令持久化人工维护状态，同时从 Axis 上传调度和 `Cloudflare Worker` 外部路由中摘除节点
+- 人工维护优先于自动探测恢复；必须显式执行 `service-up` 才能清除
 - 不会断开 `cloudflared tunnel`
-- 不会影响内部 `Axis /api/v1/nodes/assign`、节点心跳或内部服务访问
+
+### 公网 HTTPS 健康探测
+
+- 每个区域 Axis 仅探测 `AXIS_LOCAL_REGION` 对应节点的 `https://<dns_name>:443/health`
+- 默认每 5 秒检查一次，总超时 200ms；连续失败 3 次隔离，连续成功 2 次恢复
+- 失败、成功计数与隔离状态保存在区域 `platform_runtime.node_https_probe_state`，Axis 重启不会清空
+- HTTPS 探测使用独立的 Worker 区域黑名单，不会覆盖节点侧健康监控或人工维护状态
 
 ### 查看区域聚合信息
 

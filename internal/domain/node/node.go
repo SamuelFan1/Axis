@@ -70,6 +70,9 @@ type Node struct {
 	Zone               string          `json:"zone"`
 	ZoneUUID           string          `json:"zone_uuid,omitempty"`
 	Status             string          `json:"status"`
+	StatusReason       string          `json:"status_reason,omitempty"`
+	ManualDisabled     bool            `json:"manual_disabled"`
+	HTTPSProbeIsolated bool            `json:"https_probe_isolated"`
 	CPUCores           int             `json:"cpu_cores"`
 	CPUUsagePercent    float64         `json:"cpu_usage_percent"`
 	MemoryTotalGB      float64         `json:"memory_total_gb"`

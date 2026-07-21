@@ -554,6 +554,16 @@ sync_axis_db_routes() {
   echo -e "${BLUE}Axis DB routes:${NC} Core -> $(env_value AXIS_CORE_DB_HOST):$(env_value AXIS_CORE_DB_PORT), Runtime -> $(env_value AXIS_RUNTIME_DB_HOST):$(env_value AXIS_RUNTIME_DB_PORT), Derived -> $(env_value AXIS_DERIVED_DB_HOST):$(env_value AXIS_DERIVED_DB_PORT)"
 }
 
+sync_https_probe_config() {
+  echo -e "${YELLOW}Syncing regional HTTPS probe configuration in .env...${NC}"
+  upsert_env_value "AXIS_HTTPS_PROBE_ENABLED" "true"
+  upsert_env_value "AXIS_HTTPS_PROBE_INTERVAL_SEC" "5"
+  upsert_env_value "AXIS_HTTPS_PROBE_TIMEOUT_MS" "200"
+  upsert_env_value "AXIS_HTTPS_PROBE_FAILURE_THRESHOLD" "3"
+  upsert_env_value "AXIS_HTTPS_PROBE_RECOVERY_THRESHOLD" "2"
+  upsert_env_value "AXIS_HTTPS_PROBE_WORKER_RECONCILE_INTERVAL_SEC" "60"
+}
+
 comment_out_legacy_axis_db_name() {
   python3 - "${ENV_FILE}" <<'PY'
 import pathlib, sys
@@ -593,6 +603,7 @@ else
 fi
 
 sync_axis_db_routes
+sync_https_probe_config
 
 if ! command -v systemctl >/dev/null 2>&1; then
   echo -e "${RED}Error:${NC} systemctl not found."

@@ -17,6 +17,7 @@ type RegionalNodeStatus struct {
 	NodeUUID           string          `json:"node_uuid"`
 	HomeRegion         string          `json:"home_region"`
 	Status             string          `json:"status"`
+	StatusReason       string          `json:"status_reason,omitempty"`
 	SourceRegion       string          `json:"source_region"`
 	InternalIP         string          `json:"internal_ip"`
 	PublicIP           string          `json:"public_ip"`

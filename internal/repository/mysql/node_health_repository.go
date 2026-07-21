@@ -206,6 +206,27 @@ func (r *NodeRepository) buildNodeViews(ctx context.Context, identities []node.N
 	if err != nil {
 		return nil, err
 	}
+	manualByNode, err := r.LoadManualDisabled(ctx, uuids)
+	if err != nil {
+		return nil, err
+	}
+	probeByNode := make(map[string]node.HTTPSProbeState)
+	uuidsByRegion := make(map[string][]string)
+	for _, identity := range identities {
+		region := strings.TrimSpace(strings.ToLower(identity.Region))
+		if region != "" && identity.UUID != "" {
+			uuidsByRegion[region] = append(uuidsByRegion[region], identity.UUID)
+		}
+	}
+	for region, regionUUIDs := range uuidsByRegion {
+		states, err := r.LoadHTTPSProbeStates(ctx, region, regionUUIDs)
+		if err != nil {
+			return nil, err
+		}
+		for uuid, state := range states {
+			probeByNode[uuid] = state
+		}
+	}
 	items := make([]node.Node, 0, len(identities))
 	for _, identity := range identities {
 		var health *node.NodeHealth
@@ -223,6 +244,12 @@ func (r *NodeRepository) buildNodeViews(ctx context.Context, identities []node.N
 		aggregate := identity.Aggregate(health)
 		if metrics, ok := metricsByNode[identity.UUID]; ok {
 			applyNodeMetrics(&aggregate, metrics)
+		}
+		probe, hasProbe := probeByNode[identity.UUID]
+		if hasProbe {
+			node.ApplyAvailability(&aggregate, manualByNode[identity.UUID], &probe)
+		} else {
+			node.ApplyAvailability(&aggregate, manualByNode[identity.UUID], nil)
 		}
 		items = append(items, aggregate)
 	}

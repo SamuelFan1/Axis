@@ -70,6 +70,7 @@ func (s *AggregatedNodeService) Rebuild(ctx context.Context) (int, error) {
 		item.Status = node.StatusDown
 		if ok {
 			item.Status = normalizedStatus(snapshot.Status)
+			item.StatusReason = snapshot.StatusReason
 			item.StatusSourceRegion = strings.TrimSpace(strings.ToLower(snapshot.SourceRegion))
 			item.ObservedAt = snapshot.ObservedAt
 			item.Stale = isSnapshotStale(snapshot, now, s.staleAfter)
@@ -90,7 +91,12 @@ func (s *AggregatedNodeService) Rebuild(ctx context.Context) (int, error) {
 			item.LastReportedAt = snapshot.LastReportedAt
 			if item.Stale {
 				item.Status = node.StatusDown
+				item.StatusReason = "regional snapshot stale"
 			}
+		}
+		if base.ManualDisabled {
+			item.Status = node.StatusDown
+			item.StatusReason = "manual maintenance"
 		}
 		aggregated = append(aggregated, item)
 	}

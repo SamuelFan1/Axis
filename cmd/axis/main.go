@@ -179,13 +179,14 @@ func runServiceList() error {
 			item.DNSName,
 			item.Status,
 			displayServiceStatus(item.Status),
+			displayManualStatus(item),
 			manualStatusForNode(item, manualStatuses),
 			item.Region,
 			item.Zone,
 			serviceListReason(item),
 		})
 	}
-	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "SERVICE_STATUS", "MANUAL_STATUS", "REGION", "ZONE", "REASON"}, rows)
+	printTable("SERVICE_LIST_RESULT", []string{"UUID", "HOSTNAME", "INTERNAL_IP", "PUBLIC_IP", "DNS_NAME", "STATUS", "SERVICE_STATUS", "MANUAL_STATUS", "WORKER_MANUAL_STATUS", "REGION", "ZONE", "REASON"}, rows)
 	return nil
 }
 
@@ -201,6 +202,9 @@ type serviceListMonitoringSource struct {
 }
 
 func serviceListReason(item node.Node) string {
+	if strings.TrimSpace(item.StatusReason) != "" {
+		return strings.TrimSpace(item.StatusReason)
+	}
 	if len(item.MonitoringSnapshot) == 0 || string(item.MonitoringSnapshot) == "null" {
 		if strings.ToLower(strings.TrimSpace(item.Status)) != node.StatusDown {
 			return ""
@@ -272,7 +276,8 @@ func runServiceShow(uuidValue string) error {
 		{"DNS_NAME", item.DNSName},
 		{"STATUS", item.Status},
 		{"SERVICE_STATUS", displayServiceStatus(item.Status)},
-		{"MANUAL_STATUS", manualStatusForNode(item, manualStatuses)},
+		{"MANUAL_STATUS", displayManualStatus(item)},
+		{"WORKER_MANUAL_STATUS", manualStatusForNode(item, manualStatuses)},
 		{"STATUS_REASON", serviceListReason(item)},
 		{"REGION", item.Region},
 		{"ZONE", item.Zone},
@@ -304,6 +309,13 @@ func runServiceShow(uuidValue string) error {
 		printTable("DISK_DETAILS", []string{"MOUNT_POINT", "FILESYSTEM", "TOTAL_GB", "USED_GB", "USAGE_PERCENT"}, diskRows)
 	}
 	return nil
+}
+
+func displayManualStatus(item node.Node) string {
+	if item.ManualDisabled {
+		return "disable"
+	}
+	return "enable"
 }
 
 type monitoringSnapshotView struct {
@@ -680,7 +692,7 @@ func printUsage() {
 	fmt.Println("  axis service-workloads <uuid>")
 	fmt.Println("  axis service-delete <uuid>")
 	fmt.Println("  axis service-up <uuid>      # 将 MANUAL_STATUS 设为 enable，仅恢复 Worker 外部流量")
-	fmt.Println("  axis service-down <uuid>    # 将 MANUAL_STATUS 设为 disable，仅摘除 Worker 外部流量")
+	fmt.Println("  axis service-down <uuid>    # 持久人工隔离，同时摘除 Axis 调度与 Worker 外部流量")
 	fmt.Println("  axis region-list")
 	fmt.Println("  axis region-create --name <name>")
 	fmt.Println("  axis region-delete <uuid>")

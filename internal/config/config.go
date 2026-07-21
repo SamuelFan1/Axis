@@ -19,6 +19,7 @@ type Config struct {
 	Routing     RoutingConfig
 	Aggregation AggregationConfig
 	WorkerAdmin WorkerAdminConfig
+	HTTPSProbe  HTTPSProbeConfig
 	Region      RegionConfig
 }
 
@@ -125,6 +126,15 @@ type WorkerAdminConfig struct {
 	WorkerAdminSecret string
 }
 
+type HTTPSProbeConfig struct {
+	Enabled                    bool
+	IntervalSec                int
+	TimeoutMS                  int
+	FailureThreshold           int
+	RecoveryThreshold          int
+	WorkerReconcileIntervalSec int
+}
+
 func Load() (*Config, error) {
 	loadEnvFile(getEnv("AXIS_ENV_FILE", ".env"))
 
@@ -205,6 +215,14 @@ func Load() (*Config, error) {
 			WorkerURL:         strings.TrimSpace(getEnv("AXIS_WORKER_URL", "")),
 			WorkerAdminSecret: strings.TrimSpace(getEnv("AXIS_WORKER_ADMIN_SECRET", "")),
 		},
+		HTTPSProbe: HTTPSProbeConfig{
+			Enabled:                    getEnvBool("AXIS_HTTPS_PROBE_ENABLED", false),
+			IntervalSec:                getEnvInt("AXIS_HTTPS_PROBE_INTERVAL_SEC", 5),
+			TimeoutMS:                  getEnvInt("AXIS_HTTPS_PROBE_TIMEOUT_MS", 200),
+			FailureThreshold:           getEnvInt("AXIS_HTTPS_PROBE_FAILURE_THRESHOLD", 3),
+			RecoveryThreshold:          getEnvInt("AXIS_HTTPS_PROBE_RECOVERY_THRESHOLD", 2),
+			WorkerReconcileIntervalSec: getEnvInt("AXIS_HTTPS_PROBE_WORKER_RECONCILE_INTERVAL_SEC", 60),
+		},
 		Region: loadRegionConfig(),
 	}
 
@@ -246,6 +264,29 @@ func Load() (*Config, error) {
 	}
 	if cfg.App.AuthoritativeRegion == "" {
 		return nil, fmt.Errorf("AXIS_AUTHORITATIVE_REGION must be set (typically 'asia')")
+	}
+	if cfg.HTTPSProbe.Enabled {
+		if cfg.HTTPSProbe.IntervalSec <= 0 {
+			return nil, fmt.Errorf("AXIS_HTTPS_PROBE_INTERVAL_SEC must be positive")
+		}
+		if cfg.HTTPSProbe.TimeoutMS <= 0 {
+			return nil, fmt.Errorf("AXIS_HTTPS_PROBE_TIMEOUT_MS must be positive")
+		}
+		if cfg.HTTPSProbe.FailureThreshold <= 0 {
+			return nil, fmt.Errorf("AXIS_HTTPS_PROBE_FAILURE_THRESHOLD must be positive")
+		}
+		if cfg.HTTPSProbe.RecoveryThreshold <= 0 {
+			return nil, fmt.Errorf("AXIS_HTTPS_PROBE_RECOVERY_THRESHOLD must be positive")
+		}
+		if cfg.HTTPSProbe.WorkerReconcileIntervalSec <= 0 {
+			return nil, fmt.Errorf("AXIS_HTTPS_PROBE_WORKER_RECONCILE_INTERVAL_SEC must be positive")
+		}
+		if strings.TrimSpace(cfg.Region.LocalRegion) == "" {
+			return nil, fmt.Errorf("AXIS_LOCAL_REGION must be set when AXIS_HTTPS_PROBE_ENABLED is true")
+		}
+		if strings.TrimSpace(cfg.WorkerAdmin.WorkerURL) == "" || strings.TrimSpace(cfg.WorkerAdmin.WorkerAdminSecret) == "" {
+			return nil, fmt.Errorf("AXIS_WORKER_URL and AXIS_WORKER_ADMIN_SECRET must be set when AXIS_HTTPS_PROBE_ENABLED is true")
+		}
 	}
 	if strings.TrimSpace(cfg.DNS.RecordPrefix) == "" {
 		cfg.DNS.RecordPrefix = "dl-"

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS aggregated_node_status (
     zone VARCHAR(16) NOT NULL DEFAULT '',
     zone_uuid VARCHAR(36) NULL DEFAULT NULL,
     status VARCHAR(16) NOT NULL,
+    status_reason VARCHAR(512) NOT NULL DEFAULT '',
     home_region VARCHAR(64) NOT NULL,
     status_source_region VARCHAR(64) NOT NULL,
     observed_at DATETIME(6) NULL,
@@ -60,6 +61,9 @@ CREATE TABLE IF NOT EXISTS aggregated_node_status (
 	if _, err := r.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("create aggregated_node_status table: %w", err)
 	}
+	if _, err := r.db.ExecContext(ctx, `ALTER TABLE aggregated_node_status ADD COLUMN IF NOT EXISTS status_reason VARCHAR(512) NOT NULL DEFAULT '' AFTER status`); err != nil {
+		return fmt.Errorf("upgrade aggregated_node_status status_reason: %w", err)
+	}
 	return nil
 }
 
@@ -83,11 +87,11 @@ func (r *AggregatedNodeRepository) ReplaceAll(ctx context.Context, items []node.
 	const query = `
 INSERT INTO aggregated_node_status (
     node_uuid, hostname, management_address, internal_ip, public_ip, dns_label, dns_name,
-    region, region_uuid, zone, zone_uuid, status, home_region, status_source_region,
+    region, region_uuid, zone, zone_uuid, status, status_reason, home_region, status_source_region,
     observed_at, stale, cpu_cores, cpu_usage_percent, memory_total_gb, memory_used_gb,
     memory_usage_percent, swap_total_gb, swap_used_gb, swap_usage_percent, disk_usage_percent,
     disk_details, monitoring_snapshot, created_at, updated_at, last_seen_at, last_reported_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?, ?)`
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6), ?, ?)`
 	for _, item := range items {
 		if _, err := tx.ExecContext(
 			ctx,
@@ -104,6 +108,7 @@ INSERT INTO aggregated_node_status (
 			item.Zone,
 			nullString(item.ZoneUUID),
 			item.Status,
+			item.StatusReason,
 			item.HomeRegion,
 			item.StatusSourceRegion,
 			nullTime(item.ObservedAt),
@@ -235,6 +240,7 @@ SELECT
     zone,
     zone_uuid,
     status,
+    status_reason,
     cpu_cores,
     cpu_usage_percent,
     memory_total_gb,
@@ -275,6 +281,7 @@ func scanAggregatedNodeRow(src scanner) (*node.Node, error) {
 		&item.Zone,
 		&zoneUUID,
 		&item.Status,
+		&item.StatusReason,
 		&item.CPUCores,
 		&item.CPUUsagePercent,
 		&item.MemoryTotalGB,

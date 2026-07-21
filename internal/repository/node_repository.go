@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/SamuelFan1/Axis/internal/domain/node"
 )
@@ -33,4 +34,17 @@ type NodeViewRepository interface {
 	FindByUUID(ctx context.Context, uuid string) (*node.Node, error)
 	ListRegions(ctx context.Context) ([]node.RegionSummary, error)
 	ListRegionZones(ctx context.Context) ([]node.RegionZoneSummary, error)
+}
+
+type NodeAvailabilityRepository interface {
+	EnsureAvailabilitySchema(ctx context.Context) error
+	ListIdentitiesByRegion(ctx context.Context, region string) ([]node.NodeIdentity, error)
+	LoadManualDisabled(ctx context.Context, nodeUUIDs []string) (map[string]bool, error)
+	SetManualDisabled(ctx context.Context, nodeUUID string, disabled bool) error
+	DeleteManualState(ctx context.Context, nodeUUID string) error
+	LoadHTTPSProbeStates(ctx context.Context, observerRegion string, nodeUUIDs []string) (map[string]node.HTTPSProbeState, error)
+	TryClaimHTTPSProbe(ctx context.Context, observerRegion, nodeUUID, owner string, now time.Time, leaseDuration time.Duration) (bool, error)
+	RecordHTTPSProbeResult(ctx context.Context, observerRegion, nodeUUID, owner string, result node.HTTPSProbeResult, failureThreshold, recoveryThreshold int, interval time.Duration) (node.HTTPSProbeState, string, error)
+	ListIsolatedHTTPSProbeStates(ctx context.Context, observerRegion string) ([]node.HTTPSProbeState, error)
+	CleanupOrphanedHTTPSProbeRows(ctx context.Context, observerRegion string) (int, error)
 }

@@ -270,6 +270,23 @@ func main() {
 	)
 	go nodeMonitor.Run()
 
+	if cfg.HTTPSProbe.Enabled {
+		if cfg.App.AutoSchemaUpgrade {
+			if err := nodeRepo.EnsureAvailabilitySchema(ctx); err != nil {
+				log.Fatalf("ensure HTTPS probe availability schema: %v", err)
+			}
+		} else {
+			if err := requireTables(ctx, dbs.Core, cfg.CoreDB.Database, "node_manual_maintenance"); err != nil {
+				log.Fatalf("HTTPS probe enabled but core availability schema is incomplete: %v", err)
+			}
+			if err := requireTables(ctx, dbs.Runtime, cfg.RuntimeDB.Database, "node_https_probe_state"); err != nil {
+				log.Fatalf("HTTPS probe enabled but runtime availability schema is incomplete: %v", err)
+			}
+		}
+		httpsProbeService := service.NewHTTPSProbeService(nodeRepo, workerAdminClient, cfg.HTTPSProbe, cfg.Region.LocalRegion)
+		go worker.NewHTTPSProbeMonitor(httpsProbeService, cfg.HTTPSProbe.IntervalSec).Run()
+	}
+
 	server := httptransport.NewServer(cfg.App.HTTPAddress, cfg.Auth, cfg.Aggregation, nodeService, regionService, zoneService, routingHandler, aggregationHandler)
 	if err := server.Run(); err != nil {
 		log.Fatalf("run http server: %v", err)

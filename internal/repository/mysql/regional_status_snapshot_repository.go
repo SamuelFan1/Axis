@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS regional_node_status_snapshots (
     node_uuid VARCHAR(36) NOT NULL,
     home_region VARCHAR(64) NOT NULL,
     status VARCHAR(16) NOT NULL,
+    status_reason VARCHAR(512) NOT NULL DEFAULT '',
     snapshot_version VARCHAR(64) NOT NULL,
     internal_ip VARCHAR(64) DEFAULT '',
     public_ip VARCHAR(64) DEFAULT '',
@@ -53,6 +54,9 @@ CREATE TABLE IF NOT EXISTS regional_node_status_snapshots (
 	if _, err := r.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("create regional_node_status_snapshots table: %w", err)
 	}
+	if _, err := r.db.ExecContext(ctx, `ALTER TABLE regional_node_status_snapshots ADD COLUMN IF NOT EXISTS status_reason VARCHAR(512) NOT NULL DEFAULT '' AFTER status`); err != nil {
+		return fmt.Errorf("upgrade regional_node_status_snapshots status_reason: %w", err)
+	}
 	return nil
 }
 
@@ -72,6 +76,7 @@ INSERT INTO regional_node_status_snapshots (
     node_uuid,
     home_region,
     status,
+    status_reason,
     snapshot_version,
     internal_ip,
     public_ip,
@@ -90,10 +95,11 @@ INSERT INTO regional_node_status_snapshots (
     last_reported_at,
     observed_at,
     payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
     home_region = VALUES(home_region),
     status = VALUES(status),
+    status_reason = VALUES(status_reason),
     snapshot_version = VALUES(snapshot_version),
     internal_ip = VALUES(internal_ip),
     public_ip = VALUES(public_ip),
@@ -135,6 +141,7 @@ ON DUPLICATE KEY UPDATE
 			item.NodeUUID,
 			homeRegion,
 			strings.TrimSpace(strings.ToLower(item.Status)),
+			strings.TrimSpace(item.StatusReason),
 			snapshot.SnapshotVersion,
 			item.InternalIP,
 			item.PublicIP,
@@ -171,6 +178,7 @@ SELECT
     node_uuid,
     home_region,
     status,
+    status_reason,
     internal_ip,
     public_ip,
     cpu_cores,
@@ -200,6 +208,7 @@ SELECT
     node_uuid,
     home_region,
     status,
+    status_reason,
     internal_ip,
     public_ip,
     cpu_cores,
@@ -240,6 +249,7 @@ func (r *RegionalNodeStatusSnapshotRepository) listSnapshots(ctx context.Context
 			&item.NodeUUID,
 			&item.HomeRegion,
 			&item.Status,
+			&item.StatusReason,
 			&item.InternalIP,
 			&item.PublicIP,
 			&item.CPUCores,

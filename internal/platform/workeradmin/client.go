@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,12 +15,14 @@ import (
 )
 
 const manualNodeStatusPath = "/worker/manual-node-status"
+const httpsProbeRegionStatusPath = "/worker/https-probe-region-status"
 
 type Client interface {
 	Enabled() bool
 	DisableNode(ctx context.Context, originLabel string) error
 	EnableNode(ctx context.Context, originLabel string) error
 	GetManualNodeStatuses(ctx context.Context, originLabels []string) (map[string]string, error)
+	ReplaceHTTPSProbeBlacklist(ctx context.Context, region string, originLabels []string) error
 }
 
 type HTTPClient struct {
@@ -47,6 +50,11 @@ type bulkStatusResponse struct {
 	Nodes map[string]string `json:"nodes"`
 	Count int               `json:"count"`
 	Error string            `json:"error"`
+}
+
+type httpsProbeRegionStatusRequest struct {
+	Region string   `json:"region"`
+	Nodes  []string `json:"nodes"`
 }
 
 func NewClient(cfg config.WorkerAdminConfig) Client {
@@ -119,6 +127,56 @@ func (c *HTTPClient) GetManualNodeStatuses(ctx context.Context, originLabels []s
 		return map[string]string{}, nil
 	}
 	return body.Nodes, nil
+}
+
+func (c *HTTPClient) ReplaceHTTPSProbeBlacklist(ctx context.Context, region string, originLabels []string) error {
+	if !c.Enabled() {
+		return fmt.Errorf("worker admin is not configured")
+	}
+	region = strings.ToLower(strings.TrimSpace(region))
+	if region == "" {
+		return fmt.Errorf("region is required")
+	}
+	seen := make(map[string]struct{}, len(originLabels))
+	nodes := make([]string, 0, len(originLabels))
+	for _, raw := range originLabels {
+		label := strings.ToLower(strings.TrimSpace(raw))
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		nodes = append(nodes, label)
+	}
+	sort.Strings(nodes)
+	payload, err := json.Marshal(httpsProbeRegionStatusRequest{Region: region, Nodes: nodes})
+	if err != nil {
+		return fmt.Errorf("marshal HTTPS probe Worker request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+httpsProbeRegionStatusPath, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build HTTPS probe Worker request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.adminSecret)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send HTTPS probe Worker request: %w", err)
+	}
+	defer resp.Body.Close()
+	var body statusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return fmt.Errorf("decode HTTPS probe Worker response: %w", err)
+	}
+	if resp.StatusCode >= 400 || !body.OK {
+		if strings.TrimSpace(body.Error) != "" {
+			return fmt.Errorf("HTTPS probe Worker request failed: %s", strings.TrimSpace(body.Error))
+		}
+		return fmt.Errorf("HTTPS probe Worker request failed with status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (c *HTTPClient) setManualNodeStatus(ctx context.Context, originLabel string, status string) error {

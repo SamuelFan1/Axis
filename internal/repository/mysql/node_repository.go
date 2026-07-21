@@ -189,6 +189,9 @@ CREATE TABLE IF NOT EXISTS managed_nodes_history (
 	if err := r.metricsRepo.EnsureSchema(ctx); err != nil {
 		return err
 	}
+	if err := r.EnsureAvailabilitySchema(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -489,6 +492,9 @@ func (r *NodeRepository) ArchiveAndDeleteByManagementAddress(ctx context.Context
 	if _, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE management_address = ?`, managementAddress); err != nil {
 		return fmt.Errorf("delete managed node by management address: %w", err)
 	}
+	if err := r.DeleteManualState(ctx, identity.UUID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -522,6 +528,9 @@ func (r *NodeRepository) DeleteByUUID(ctx context.Context, uuid string) (bool, e
 	if err := r.deleteRuntimeByNodeUUIDs(ctx, []string{uuid}); err != nil {
 		return false, err
 	}
+	if err := r.DeleteManualState(ctx, uuid); err != nil {
+		return false, err
+	}
 	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE uuid = ?`, uuid)
 	if err != nil {
 		return false, fmt.Errorf("delete managed node: %w", err)
@@ -541,6 +550,9 @@ func (r *NodeRepository) DeleteByRegionUUID(ctx context.Context, regionUUID stri
 	if err := r.deleteRuntimeByNodeUUIDs(ctx, uuids); err != nil {
 		return 0, err
 	}
+	if err := r.deleteManualStates(ctx, uuids); err != nil {
+		return 0, err
+	}
 	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE region_uuid = ?`, regionUUID)
 	if err != nil {
 		return 0, fmt.Errorf("delete managed nodes by region uuid: %w", err)
@@ -554,6 +566,9 @@ func (r *NodeRepository) DeleteByZoneUUID(ctx context.Context, zoneUUID string) 
 		return 0, err
 	}
 	if err := r.deleteRuntimeByNodeUUIDs(ctx, uuids); err != nil {
+		return 0, err
+	}
+	if err := r.deleteManualStates(ctx, uuids); err != nil {
 		return 0, err
 	}
 	result, err := r.db.ExecContext(ctx, `DELETE FROM managed_nodes WHERE zone_uuid = ?`, zoneUUID)
@@ -857,6 +872,22 @@ func (r *NodeRepository) deleteRuntimeByNodeUUIDsTx(ctx context.Context, tx *sql
 	deleteHealthQuery := fmt.Sprintf(`DELETE FROM node_health_by_region WHERE node_uuid IN (%s)`, strings.Join(placeholders, ","))
 	if _, err := tx.ExecContext(ctx, deleteHealthQuery, args...); err != nil {
 		return fmt.Errorf("delete managed node health by uuid: %w", err)
+	}
+	deleteProbeQuery := fmt.Sprintf(`DELETE FROM node_https_probe_state WHERE node_uuid IN (%s)`, strings.Join(placeholders, ","))
+	if _, err := tx.ExecContext(ctx, deleteProbeQuery, args...); err != nil {
+		return fmt.Errorf("delete HTTPS probe state by uuid: %w", err)
+	}
+	return nil
+}
+
+func (r *NodeRepository) deleteManualStates(ctx context.Context, nodeUUIDs []string) error {
+	placeholders, args := normalizedUUIDArgs(nodeUUIDs)
+	if len(placeholders) == 0 {
+		return nil
+	}
+	query := fmt.Sprintf(`DELETE FROM node_manual_maintenance WHERE node_uuid IN (%s)`, strings.Join(placeholders, ","))
+	if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("delete manual node maintenance by uuid: %w", err)
 	}
 	return nil
 }

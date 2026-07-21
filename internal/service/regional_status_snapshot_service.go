@@ -42,6 +42,7 @@ func (s *RegionalStatusSnapshotService) Generate(ctx context.Context) (node.Regi
 			NodeUUID:           item.UUID,
 			HomeRegion:         item.Region,
 			Status:             item.Status,
+			StatusReason:       item.StatusReason,
 			SourceRegion:       s.localRegion,
 			InternalIP:         item.InternalIP,
 			PublicIP:           item.PublicIP,

@@ -107,11 +107,24 @@ flowchart TD
   - 后台 `NodeMonitor` 超时将本区健康收敛为 `down`
 - 容易遗漏的自动维护链路：
   - `service-list` / `service-show` / assign / routing snapshot 读取的是“节点身份 + 归属 region 对应的健康记录”的聚合视图
-  - `service-up` / `service-down` 仍只影响 Worker 外部流量，不作为健康事实来源
+  - 最终调度状态还会叠加 `node_manual_maintenance` 和 `node_https_probe_state`
   - `managed_node_metrics_ext` 当前仍作为区域健康层的指标扩展表使用
 - 数据性质：区域健康表
 - 最终建议策略：`区域本地化`
 - 理由：健康状态是观察结果，不同区域允许短时差异；把它单独建模后，就不会污染全局身份真相。
+
+## `node_manual_maintenance`
+
+- 表功能：保存管理员通过 `service-up` / `service-down` 设置的全局维护状态。
+- 数据库：`platform_core`；主键为 `node_uuid`。
+- 人工隔离优先于心跳和 HTTPS 自动恢复，并同步到 Worker 的 `node:manual-blacklist`。
+
+## `node_https_probe_state`
+
+- 表功能：保存本区域对节点公网 HTTPS 443 `/health` 的连续结果、隔离状态和多实例探测租约。
+- 数据库：各区域本地 `platform_runtime`；主键为 `(observer_region, node_uuid)`。
+- 连续失败 3 次隔离，连续成功 2 次恢复；计数在 Axis 重启后保留。
+- 区域隔离集合同步到 Worker 的 `node:https-probe-blacklist:<region>`，不修改人工或节点侧健康黑名单。
 
 ## `managed_nodes_history`
 
